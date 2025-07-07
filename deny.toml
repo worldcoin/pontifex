@@ -40,4 +40,5 @@ allow = [
 [advisories]
 ignore = [
     "RUSTSEC-2024-0436", # Unmaintained `paste` (2025-08-07)
+    "RUSTSEC-2021-0127", # Unmaintained `serde_cbor` (requires upstream update, see https://github.com/aws/aws-nitro-enclaves-nsm-api/pull/56)
 ]
