@@ -76,3 +76,4 @@ jobs:
         with:
           command: check ${{ matrix.checks }}
           rust-version: stable
+          arguments: --all-features
