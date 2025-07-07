@@ -174,7 +174,7 @@ mod tests {
         let document: AttestationDoc = SecureModule::parse_raw_attestation_doc(document).unwrap();
 
         assert_eq!(document.module_id, "test");
-        assert_eq!(document.timestamp, 1748469829761);
+        assert_eq!(document.timestamp, 1_748_469_829_761);
         assert_eq!(document.certificate, ByteBuf::from(vec![3, 4]));
         assert_eq!(document.nonce, Some(ByteBuf::from(b"some nonce")));
         assert_eq!(document.user_data, Some(ByteBuf::from(b"hello, world!")));
