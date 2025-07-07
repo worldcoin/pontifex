@@ -22,8 +22,9 @@ jobs:
       new_version: ${{ steps.version.outputs.new_version }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: main
+        # FIXME
+        # with:
+        #   ref: main
 
       - name: Calculate new version
         id: version

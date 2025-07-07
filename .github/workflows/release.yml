@@ -58,6 +58,8 @@ jobs:
   publish-to-crates-io:
     needs: [pre-release-checks]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
