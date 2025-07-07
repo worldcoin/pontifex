@@ -1,6 +1,7 @@
 name: Initiate Release
 
 on:
+  pull_request: # FIXME
   workflow_dispatch:
     inputs:
       bump_type:
@@ -27,7 +28,9 @@ jobs:
       - name: Calculate new version
         id: version
         env:
-          BUMP_TYPE: ${{ github.event.inputs.bump_type }}
+          # FIXME
+          # BUMP_TYPE: ${{ github.event.inputs.bump_type }}
+          BUMP_TYPE: patch
         run: |
           # Get current version from Cargo.toml
           CURRENT_VERSION=$(grep -m 1 'version = ' Cargo.toml | cut -d '"' -f 2)
@@ -73,25 +76,55 @@ jobs:
       - name: Generate Release Notes
         id: release_notes
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPO: ${{ github.repository }}
           NEW_VERSION: ${{ steps.version.outputs.new_version }}
         run: |
-          # Get the latest release tag
-          LATEST_TAG=$(gh release list -L 1 | cut -f 3)
-
-          # Generate release notes between latest tag and current branch
-          NOTES=$(gh api \
+            # Get the latest release tag
+            LATEST_TAG=$(gh release list -L 1 | cut -f 3)
+  
+            # Generate release notes between latest tag and current branch
+            NOTES=$(gh api \
               --method POST \
               -H "Accept: application/vnd.github+json" \
               "/repos/${GITHUB_REPO}/releases/generate-notes" \
               -f tag_name="${NEW_VERSION}" \
               -f previous_tag_name="${LATEST_TAG}" \
               | jq -r .body)
+  
+            if [[ "$NOTES" == "null" || -z "${NOTES// }" ]]; then
+              echo "Error: Failed to generate release notes"
+              echo "NOTES value: '$NOTES'"
+              exit 1
+            fi
+  
+            echo "release_notes<<DELIM" >> "$GITHUB_OUTPUT"
+            echo "$NOTES" >> "$GITHUB_OUTPUT"
+            echo "DELIM" >> "$GITHUB_OUTPUT"
+  
+      - name: Update CHANGELOG.md
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+          RELEASE_NOTES: ${{ steps.release_notes.outputs.release_notes }}
+        run: |        
+            # Check if version already exists in changelog
+            if grep -q "## \[$NEW_VERSION\]" CHANGELOG.md; then
+                echo "Version $NEW_VERSION already exists in CHANGELOG.md, skipping update"
+                exit 0
+            fi
 
-          echo "release_notes<<DELIM" >> "$GITHUB_OUTPUT"
-          echo "$NOTES" >> "$GITHUB_OUTPUT"
-          echo "DELIM" >> "$GITHUB_OUTPUT"
+            # Create a temporary file with the new changelog entry
+            echo -e "\n\n" > temp_changelog.md
+            echo "## [$NEW_VERSION] - $(date +%Y-%m-%d)" >> temp_changelog.md
+            echo "" >> temp_changelog.md
+            echo "$RELEASE_NOTES" >> temp_changelog.md
+            echo "" >> temp_changelog.md
+            
+            # Insert the new changelog entry after the header
+            awk 'NR==1{print; system("cat temp_changelog.md"); next} 1' CHANGELOG.md > new_changelog.md
+            
+            mv new_changelog.md CHANGELOG.md
+            rm temp_changelog.md
 
       - name: Get branch name
         id: branch_name
@@ -120,7 +153,7 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
           git add Cargo.toml
-          git add Cargo.lock
+          git add CHANGELOG.md
           git commit -m "Bump crate version to $NEW_VERSION"
           git push origin "$BRANCH_NAME"
 
