@@ -1,4 +1,10 @@
-#![deny(clippy::all, clippy::pedantic, clippy::nursery)]
+#![deny(
+	clippy::all,
+	clippy::pedantic,
+	clippy::nursery,
+	missing_docs,
+	dead_code
+)]
 #![doc = include_str!("../README.md")]
 
 /// Client-side functionality.
@@ -13,7 +19,7 @@ pub mod server;
 #[cfg(feature = "server")]
 pub use server::{listen, listen_with_ctx};
 
-/// Nitro Secure Module (NSM) functionality.
+/// Enables low-level interfacing with the Nitro Secure Module (NSM).
 #[cfg(any(feature = "nsm", feature = "nsm-types"))]
 pub mod nsm;
 #[cfg(feature = "nsm")]
