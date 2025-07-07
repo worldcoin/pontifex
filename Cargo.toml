@@ -36,5 +36,8 @@ nsm-types = [
     "dep:aws-nitro-enclaves-nsm-api",
 ]
 
+[dev-dependencies]
+tokio-test = "0.4"
+
 [package.metadata.docs.rs]
 all-features = true

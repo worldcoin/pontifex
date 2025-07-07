@@ -19,6 +19,7 @@ pub mod server;
 #[cfg(feature = "server")]
 pub use server::listen;
 
+/// Enables low-level interfacing with the Nitro Secure Module (NSM).
 #[cfg(any(feature = "nsm", feature = "nsm-types"))]
 pub mod nsm;
 #[cfg(feature = "nsm")]

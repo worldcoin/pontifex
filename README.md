@@ -17,8 +17,7 @@ struct RequestPayload {}
 #[derive(serde::Serialize)]
 struct ResponsePayload {}
 
-#[tokio::main]
-async fn main() {
+async fn example() {
     // setup tracing, etc.
 
     tracing::info!("🦀 Starting server...");
@@ -49,8 +48,7 @@ struct RequestPayload {}
 #[derive(serde::Deserialize)]
 struct ResponsePayload {}
 
-#[tokio::main]
-async fn main() {
+async fn example() {
 
     let request = RequestPayload {};
 
