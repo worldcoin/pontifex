@@ -49,6 +49,28 @@ where
 	Req: for<'de> Deserialize<'de>,
 	Fut: Future<Output = Res> + Send,
 {
+	listen_with_ctx(port, (), move |req, ()| process(req)).await
+}
+
+/// Listen and process incoming connections on the given port.
+///
+/// The `process` function is called for each incoming connection with a copy of the context and should return a response.
+///
+/// # Errors
+///
+/// Errors are returned if the server fails to bind to the given port.
+/// Errors will be logged (but not returned) if the server fails to accept a connection or if processing fails.
+pub async fn listen_with_ctx<Req, Res, Ctx, Fut>(
+	port: u32,
+	context: Ctx,
+	process: impl Fn(Req, Ctx) -> Fut + Send + Sync + 'static,
+) -> Result<(), Error>
+where
+	Res: Serialize + Send,
+	Ctx: Clone + Send + 'static,
+	Req: for<'de> Deserialize<'de>,
+	Fut: Future<Output = Res> + Send,
+{
 	let listener =
 		VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, port)).map_err(Error::Bind)?;
 
@@ -81,9 +103,10 @@ where
 
 		tracing::trace!("spawning new task to handle connection");
 
+		let context = context.clone();
 		let process = process.clone();
 		tokio::spawn(async move {
-			match process_request(stream, process).await {
+			match process_request(stream, context.clone(), process).await {
 				Ok(()) => tracing::debug!("request processed successfully"),
 				Err(e) => tracing::error!("failed to process request: {e}"),
 			}
@@ -91,11 +114,13 @@ where
 	}
 }
 
-async fn process_request<Req, Res, Fut>(
+async fn process_request<Req, Res, Ctx, Fut>(
 	mut stream: Stream,
-	process: Arc<impl Fn(Req) -> Fut + Send + Sync>,
+	context: Ctx,
+	process: Arc<impl Fn(Req, Ctx) -> Fut + Send + Sync>,
 ) -> Result<(), Error>
 where
+	Ctx: Clone,
 	Res: Serialize + Send,
 	Req: for<'de> Deserialize<'de>,
 	Fut: Future<Output = Res> + Send,
@@ -111,7 +136,7 @@ where
 
 	let request = rmp_serde::from_slice(&payload).map_err(Error::Decoding)?;
 
-	let response = process(request).await;
+	let response = process(request, context).await;
 
 	let payload = rmp_serde::to_vec(&response).map_err(Error::Encoding)?;
 	stream

@@ -51,6 +51,7 @@ pub enum Error {
 /// - If the response fails to be decoded.
 /// - If the request fails to be sent.
 /// - If the response fails to be received.
+#[allow(clippy::cognitive_complexity)]
 pub async fn send<Req, Res>(connection: ConnectionDetails, payload: &Req) -> Result<Res, Error>
 where
 	Req: Serialize + Sync,
