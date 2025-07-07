@@ -4,8 +4,10 @@ use tokio_vsock::VsockAddr;
 
 use crate::utils::kms::vsock_proxy;
 
+/// The CID of the vsock proxy.
 pub const VSOCK_PROXY_CID: u32 = 3;
 
+/// Credentials to use for KMS requests.
 pub struct Credentials {
 	access_key_id: String,
 	secret_access_key: String,
@@ -13,6 +15,7 @@ pub struct Credentials {
 }
 
 impl Credentials {
+	/// Creates a new set of KMS credentials.
 	pub fn new(
 		access_key_id: impl Into<String>,
 		secret_access_key: impl Into<String>,
@@ -26,6 +29,7 @@ impl Credentials {
 	}
 }
 
+/// Creates a new KMS client.
 #[must_use]
 pub fn client(
 	config: &SdkConfig,
