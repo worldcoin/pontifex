@@ -49,14 +49,14 @@ aws-smithy-runtime-api = { version = "1.8.0", features = [
     "client",
 ], optional = true }
 aws-types = { version = "*", optional = true }
-hyper-rustls = { version = "<0.26", optional = true, features = [
-    "webpki-roots",
-] }
 hyper = { version = "0.14", features = [
     "client",
     "http1",
     "http2",
 ], optional = true }
+hyper-rustls = { version = "<0.26", optional = true, features = [
+    "webpki-roots",
+] }
 rmp-serde = "1"
 rustls = { version = "0.22", optional = true }
 serde = "1"
