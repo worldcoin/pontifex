@@ -3,12 +3,14 @@ use std::{
 	net::Shutdown,
 	ops::{Deref, DerefMut},
 };
+#[cfg(feature = "client")]
+use tokio_vsock::VsockAddr;
 use tokio_vsock::VsockStream;
 #[cfg(any(feature = "client", feature = "server"))]
 use {std::io, tokio::io::AsyncReadExt};
 
-#[cfg(feature = "client")]
-use tokio_vsock::VsockAddr;
+#[cfg(feature = "kms")]
+pub mod kms;
 
 /// The piece of data that was being read/written when an error occurred.
 #[derive(Debug)]
