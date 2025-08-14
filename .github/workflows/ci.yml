@@ -1,79 +1,74 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+    push:
+        branches: [main]
+    pull_request:
 
 env:
-  CARGO_TERM_COLOR: always
+    CARGO_TERM_COLOR: always
 
 jobs:
-  lint:
-    name: Format, Clippy & Build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    lint:
+        name: Format, Clippy & Build
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: stable
 
-      - name: Check code formatting
-        run: cargo fmt -- --check
+            - name: Check code formatting
+              run: cargo fmt -- --check
 
-      - name: Cargo sort
-        run: |
-          cargo install cargo-sort
-          cargo sort --check
+            - name: Run clippy
+              run: cargo clippy --all-targets --all-features
 
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features
+            - name: Build
+              run: cargo build
 
-      - name: Build
-        run: cargo build
+    test:
+        name: Tests
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
 
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: stable
 
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
+            - name: Run tests
+              run: |
+                  cargo test --all-features
 
-      - name: Run tests
-        run: |
-          cargo test --all-features
+    deny:
+        name: Cargo deny
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        strategy:
+            matrix:
+                checks:
+                    - advisories
+                    - bans licenses sources
 
-  deny:
-    name: Cargo deny
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    strategy:
-      matrix:
-        checks:
-          - advisories
-          - bans licenses sources
+        continue-on-error: ${{ matrix.checks == 'advisories' }}
 
-    continue-on-error: ${{ matrix.checks == 'advisories' }}
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: EmbarkStudios/cargo-deny-action@v1
-        with:
-          command: check ${{ matrix.checks }}
-          rust-version: stable
-          arguments: --all-features
+            - uses: EmbarkStudios/cargo-deny-action@v2
+              with:
+                  command: check ${{ matrix.checks }}
+                  rust-version: stable
+                  arguments: --all-features

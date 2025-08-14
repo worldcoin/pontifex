@@ -17,7 +17,7 @@ pub use client::{ConnectionDetails, send};
 #[cfg(feature = "server")]
 pub mod server;
 #[cfg(feature = "server")]
-pub use server::listen;
+pub use server::{listen, listen_with_ctx};
 
 /// Enables low-level interfacing with the Nitro Secure Module (NSM).
 #[cfg(any(feature = "nsm", feature = "nsm-types"))]
@@ -26,5 +26,9 @@ pub mod nsm;
 pub use nsm::SecureModule;
 #[cfg(feature = "nsm-types")]
 pub use nsm::{AttestationDoc, AttestationError};
+
+/// KMS functionality.
+#[cfg(feature = "kms")]
+pub mod kms;
 
 mod utils;
