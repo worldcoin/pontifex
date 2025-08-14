@@ -31,4 +31,8 @@ pub use nsm::{AttestationDoc, AttestationError};
 #[cfg(feature = "kms")]
 pub mod kms;
 
+/// HTTP-through-vsock
+#[cfg(feature = "http")]
+pub mod http;
+
 mod utils;
