@@ -1,5 +1,3 @@
-use aws_smithy_http_client::hyper_014::HyperClientBuilder;
-use aws_smithy_runtime_api::client::http::SharedHttpClient;
 use hyper::{
 	Uri,
 	client::connect::{Connected, Connection},
@@ -15,23 +13,20 @@ use std::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_vsock::{VsockAddr, VsockStream};
 
-pub fn vsock_proxy(address: VsockAddr) -> SharedHttpClient {
-	// copied from aws_smithy_http_client::hyper_legacy::default_connector except for the cert roots
+pub fn vsock_proxy(address: VsockAddr) -> HttpsConnector<VSockClientBuilder> {
 	let cc = rustls::ClientConfig::builder()
 		.with_webpki_roots()
 		.with_no_client_auth();
 
-	let https_connector = HttpsConnector::from((VSockClientBuilder { address }, cc));
-
-	HyperClientBuilder::new().build(https_connector)
+	HttpsConnector::from((VSockClientBuilder { address }, cc))
 }
 
 #[derive(Debug, Clone, Copy)]
-struct VSockClientBuilder {
+pub struct VSockClientBuilder {
 	address: VsockAddr,
 }
 
-struct VSockClient {
+pub struct VSockClient {
 	stream: Option<VsockStream>,
 }
 
