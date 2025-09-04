@@ -2,6 +2,19 @@
 
 
 
+## [0.1.4] - 2025-09-04
+
+## What's Changed
+* fix: fix release issues by @andy-t-wang in https://github.com/worldcoin/pontifex/pull/9
+
+## New Contributors
+* @andy-t-wang made their first contribution in https://github.com/worldcoin/pontifex/pull/9
+
+**Full Changelog**: https://github.com/worldcoin/pontifex/compare/0.1.3...0.1.4
+
+
+
+
 ## [0.1.3] - 2025-09-03
 
 ## What's Changed
