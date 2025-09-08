@@ -2,7 +2,10 @@ use hyper::Client;
 use hyper_rustls::HttpsConnector;
 use tokio_vsock::VsockAddr;
 
-use crate::utils::http::{VSockClientBuilder, vsock_proxy};
+use crate::utils::http::vsock_proxy;
+
+// Re-export VSockClientBuilder for public use
+pub use crate::utils::http::VSockClientBuilder;
 
 /// The CID of the vsock proxy.
 pub const VSOCK_PROXY_CID: u32 = 3;
