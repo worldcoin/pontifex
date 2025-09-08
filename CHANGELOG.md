@@ -2,6 +2,19 @@
 
 
 
+## [0.1.5] - 2025-09-08
+
+## What's Changed
+* chore: Add `HttpClient` Type by @Takaros999 in https://github.com/worldcoin/pontifex/pull/12
+
+## New Contributors
+* @Takaros999 made their first contribution in https://github.com/worldcoin/pontifex/pull/12
+
+**Full Changelog**: https://github.com/worldcoin/pontifex/compare/0.1.4...0.1.5
+
+
+
+
 ## [0.1.4] - 2025-09-04
 
 ## What's Changed
