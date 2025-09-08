@@ -2,10 +2,16 @@ use hyper::Client;
 use hyper_rustls::HttpsConnector;
 use tokio_vsock::VsockAddr;
 
-use crate::utils::http::{VSockClientBuilder, vsock_proxy};
+use crate::utils::http::vsock_proxy;
+
+// Re-export VSockClientBuilder for public use
+pub use crate::utils::http::VSockClientBuilder;
 
 /// The CID of the vsock proxy.
 pub const VSOCK_PROXY_CID: u32 = 3;
+
+/// A HTTP client that tunnels all requests through the host's vsock proxy.
+pub type HttpClient = Client<HttpsConnector<VSockClientBuilder>>;
 
 #[must_use]
 /// Creates an HTTPS client that tunnels all requests through the host's vsock proxy.
@@ -49,7 +55,7 @@ pub const VSOCK_PROXY_CID: u32 = 3;
 /// - The connector ignores the dial target from the URI and always connects to
 ///   the fixed vsock address (CID 3 + `vsock_proxy_port`), while preserving
 ///   Host/SNI for end-to-end TLS to the upstream.
-pub fn client(vsock_proxy_port: u32) -> Client<HttpsConnector<VSockClientBuilder>> {
+pub fn client(vsock_proxy_port: u32) -> HttpClient {
 	Client::builder().build(vsock_proxy(VsockAddr::new(
 		VSOCK_PROXY_CID,
 		vsock_proxy_port,

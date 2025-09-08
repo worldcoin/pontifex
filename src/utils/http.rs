@@ -21,6 +21,11 @@ pub fn vsock_proxy(address: VsockAddr) -> HttpsConnector<VSockClientBuilder> {
 	HttpsConnector::from((VSockClientBuilder { address }, cc))
 }
 
+/// A connector builder for creating vsock-based HTTP(S) connections.
+///
+/// This type implements hyper's `Service` trait to create connections through
+/// a vsock address, typically used for communication with the host from within
+/// a Nitro Enclave.
 #[derive(Debug, Clone, Copy)]
 pub struct VSockClientBuilder {
 	address: VsockAddr,
