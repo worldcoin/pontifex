@@ -1,4 +1,3 @@
-use serde::{Deserialize, Serialize};
 use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -42,7 +41,10 @@ pub enum Error {
 	Reading(CodingKey, io::Error),
 }
 
-/// Send a request to the enclave and receive a response.
+/// Send a type-safe request to the enclave.
+///
+/// The response type is automatically determined by the Request implementation,
+/// ensuring compile-time safety between requests and responses.
 ///
 /// # Errors
 ///
@@ -51,10 +53,9 @@ pub enum Error {
 /// - If the response fails to be decoded.
 /// - If the request fails to be sent.
 /// - If the response fails to be received.
-pub async fn send<Req, Res>(connection: ConnectionDetails, payload: &Req) -> Result<Res, Error>
+pub async fn send<R>(connection: ConnectionDetails, request: &R) -> Result<R::Response, Error>
 where
-	Req: Serialize + Sync,
-	Res: for<'de> Deserialize<'de>,
+	R: crate::Request,
 {
 	let mut stream = Stream::connect(connection.cid, connection.port)
 		.await
@@ -62,23 +63,33 @@ where
 
 	tracing::debug!("established connection to enclave");
 
-	let request = rmp_serde::to_vec(payload).map_err(Error::Encoding)?;
-
-	tracing::debug!(payload =? request, "encoded request payload");
-
+	// Send type ID first
+	let type_id = R::type_id();
 	stream
-		.write_u64(request.len() as u64)
+		.write_u32(type_id)
 		.await
 		.map_err(|e| Error::Writing(CodingKey::Length, e))?;
 
-	tracing::debug!(length = request.len(), "sent request length");
+	tracing::debug!(type_id = format!("0x{:08x}", type_id), "sent type ID");
+
+	// Then send request payload
+	let request_bytes = rmp_serde::to_vec(request).map_err(Error::Encoding)?;
+
+	tracing::debug!(payload =? request_bytes, "encoded request payload");
 
 	stream
-		.write_all(&request)
+		.write_u64(request_bytes.len() as u64)
+		.await
+		.map_err(|e| Error::Writing(CodingKey::Length, e))?;
+
+	tracing::debug!(length = request_bytes.len(), "sent request length");
+
+	stream
+		.write_all(&request_bytes)
 		.await
 		.map_err(|e| Error::Writing(CodingKey::Payload, e))?;
 
-	tracing::debug!(payload =? request, "sent encoded request payload");
+	tracing::debug!(payload =? request_bytes, "sent encoded request payload");
 
 	let len = stream
 		.read_u64()
