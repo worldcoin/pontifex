@@ -65,7 +65,7 @@ trait Handler<S>: Send + Sync {
 /// # The Problem It Solves
 ///
 /// Users write handlers with specific types:
-/// ```rust
+/// ```rust,ignore
 /// async fn handle_health(state: AppState, req: HealthCheck) -> HealthStatus { ... }
 /// ```
 ///
@@ -191,7 +191,7 @@ impl Router<()> {
 	///
 	/// # Example
 	///
-	/// ```rust
+	/// ```rust,ignore
 	/// let router = Router::new()
 	///     .route::<HealthCheck>(|_state, req| async {
 	///         HealthStatus { ok: true }
@@ -222,7 +222,7 @@ where
 	///
 	/// # Example
 	///
-	/// ```rust
+	/// ```rust,ignore
 	/// let router = Router::with_state(AppState::new())
 	///     .route::<GetUser>(|state, req| async move {
 	///         state.get_user(req.id).await
@@ -245,7 +245,7 @@ where
 	///
 	/// # Example
 	///
-	/// ```rust
+	/// ```rust,ignore
 	/// router.route::<HealthCheck>(|state, req| async move {
 	///     // state is Arc<AppState> - cheap to clone!
 	///     // Access fields with state.field_name

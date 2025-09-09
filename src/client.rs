@@ -57,7 +57,7 @@ pub enum Error {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// let health_check = HealthCheck {};
 /// let response: HealthStatus = send(connection, &health_check).await?;
 /// // The compiler ensures response is HealthStatus, not some other type
