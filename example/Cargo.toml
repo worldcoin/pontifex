@@ -1,5 +1,5 @@
 [package]
-name = "pontifex-echo-demo"
+name = "pontifex-example"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,6 +12,6 @@ name = "client"
 path = "src/bin/client.rs"
 
 [dependencies]
-pontifex = { path = "../..", features = ["server", "client"] }
+pontifex = { path = "..", features = ["server", "client"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

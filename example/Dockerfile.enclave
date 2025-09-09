@@ -1,14 +1,6 @@
 # Use Amazon Linux 2023 minimal image
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023-minimal
 
-# Install only essential runtime dependencies
-RUN dnf install -y libgcc && \
-    dnf clean all && \
-    rm -rf /var/cache/dnf
-
-# Create a non-root user for running the application
-RUN useradd -m -u 1000 enclave
-
 # Set working directory
 WORKDIR /app
 
@@ -16,17 +8,9 @@ WORKDIR /app
 ARG BINARY_PATH=target/release
 
 # Copy the pre-built binary
-# Build with: cargo build --release --bin enclave
 COPY ${BINARY_PATH}/enclave /app/enclave
 
-# Make sure it's executable
 RUN chmod +x /app/enclave
-
-# Switch to non-root user
-USER enclave
-
-# Expose the enclave port
-EXPOSE 1000
 
 # Run the enclave
 CMD ["/app/enclave"]

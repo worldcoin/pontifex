@@ -38,7 +38,7 @@ deploy: build
 	@sudo nitro-cli terminate-enclave --all 2>/dev/null || true
 	@sleep 1
 	@sudo nitro-cli run-enclave \
-		--cpu-count 1 \
+		--cpu-count 2 \
 		--memory 1024 \
 		--enclave-cid $(ENCLAVE_CID) \
 		--eif-path enclave.eif \

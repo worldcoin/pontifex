@@ -2,15 +2,4 @@
 *
 
 # Allow only the target directory with binaries
-!target/release/server
-!target/release/client
-!target/debug/server
-!target/debug/client
-
-# Ignore build artifacts we don't need
-target/**/*.d
-target/**/*.rlib
-target/**/deps
-target/**/incremental
-target/**/build
-target/**/.fingerprint
+!target/release/enclave
