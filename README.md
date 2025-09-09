@@ -2,66 +2,72 @@
 
 > Pontifex (noun): Originally meaning "bridge-builder" in Latin
 
-Pontifex is a Rust library for building and interacting with AWS Nitro enclaves. It provides a simple abstraction for building enclaves and interacting with them using the AWS Nitro Enclaves SDK.
+Pontifex is a Rust library for building and interacting with AWS Nitro enclaves.
 
 ## Usage
 
-First, add `pontifex` to your enclave's `Cargo.toml` with the `server` feature. Then, you can build your enclave as follows:
+### Common Types
+
+Define request/response pairs that both client and server use:
 
 ```rust
+use serde::{Deserialize, Serialize};
+use pontifex::Request;
+
+#[derive(Serialize, Deserialize)]
+struct HealthCheck;
+
+#[derive(Serialize, Deserialize)]
+struct HealthStatus {
+    healthy: bool,
+}
+
+impl Request for HealthCheck {
+    const ROUTE_ID: &'static str = "health_check_v1";
+    type Response = HealthStatus;
+}
+```
+
+### Server
+
+```rust
+use pontifex::Router;
+use std::sync::Arc;
+
 const ENCLAVE_PORT: u32 = 1000;
 
-#[derive(serde::Deserialize)]
-struct RequestPayload {}
+// Stateless server
+let router = Router::new()
+    .route::<HealthCheck, _, _>(|_state, _req| async {
+        HealthStatus { healthy: true }
+    });
 
-#[derive(serde::Serialize)]
-struct ResponsePayload {}
-
-async fn example() {
-    // setup tracing, etc.
-
-    tracing::info!("🦀 Starting server...");
-
-    if let Err(e) = pontifex::listen(ENCLAVE_PORT, process).await {
-        eprintln!("Failed to start server: {e}");
-    }
+// Or with state
+#[derive(Clone)]
+struct AppState {
+    db: Database,
 }
 
-async fn process(request: RequestPayload) -> ResponsePayload {
-    // handle request
+let router = Router::with_state(AppState { db: Database::new() })
+    .route::<GetUser, _, _>(|state: Arc<AppState>, req| async move {
+        // Handlers receive Arc<State> for cheap cloning
+        state.db.get_user(req.id).await
+    });
 
-    ResponsePayload {}
-}
+router.serve(ENCLAVE_PORT).await?;
 ```
 
-Then, on your client, add `pontifex` to your `Cargo.toml` with the `client` feature. You can then interact with your enclave as follows:
+### Client
 
 ```rust
-use pontifex::ConnectionDetails;
+use pontifex::{ConnectionDetails, send};
 
 const ENCLAVE_CID: u32 = 100;
-const ENCLAVE_PORT: u32 = 1024;
+const ENCLAVE_PORT: u32 = 1000;
 
-#[derive(serde::Serialize)]
-struct RequestPayload {}
-
-#[derive(serde::Deserialize)]
-struct ResponsePayload {}
-
-async fn example() {
-
-    let request = RequestPayload {};
-
-    let result = pontifex::send::<RequestPayload, ResponsePayload>(ConnectionDetails::new(ENCLAVE_CID, ENCLAVE_PORT), &request).await;
-
-    if let Ok(response) = result {
-        println!("Response received");
-    }
-}
-
+let connection = ConnectionDetails::new(ENCLAVE_CID, ENCLAVE_PORT);
+let response: HealthStatus = send(&connection, &HealthCheck).await?;
 ```
-
-For convenience, you can define a common crate that both your enclave and client depend on, which contains your request and response types.
 
 ## License
 

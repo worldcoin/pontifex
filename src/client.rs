@@ -41,18 +41,35 @@ pub enum Error {
 	Reading(CodingKey, io::Error),
 }
 
-/// Send a type-safe request to the enclave.
+/// Send a type-safe request to the enclave and receive its corresponding response.
 ///
-/// The response type is automatically determined by the Request implementation,
-/// ensuring compile-time safety between requests and responses.
+/// This function leverages Rust's type system to ensure you can only receive
+/// the correct response type for your request. The compiler will prevent you
+/// from expecting the wrong response type.
+///
+/// # How It Works
+///
+/// 1. The function first sends a type identifier (hash of `ROUTE_ID`) to tell
+///    the server which handler to use
+/// 2. Then it sends the serialized request payload
+/// 3. The server uses the type ID to route to the correct handler
+/// 4. The response is automatically deserialized to the correct type
+///
+/// # Example
+///
+/// ```rust
+/// let health_check = HealthCheck {};
+/// let response: HealthStatus = send(connection, &health_check).await?;
+/// // The compiler ensures response is HealthStatus, not some other type
+/// ```
 ///
 /// # Errors
 ///
-/// - If the connection fails.
-/// - If the request fails to be encoded.
-/// - If the response fails to be decoded.
-/// - If the request fails to be sent.
-/// - If the response fails to be received.
+/// - `Error::Connection`: Failed to connect to the enclave
+/// - `Error::Encoding`: Failed to serialize the request
+/// - `Error::Writing`: Failed to send data to the enclave  
+/// - `Error::Reading`: Failed to receive data from the enclave
+/// - `Error::Decoding`: Failed to deserialize the response
 pub async fn send<R>(connection: ConnectionDetails, request: &R) -> Result<R::Response, Error>
 where
 	R: crate::Request,
@@ -63,7 +80,7 @@ where
 
 	tracing::debug!("established connection to enclave");
 
-	// Send type ID first
+	// Step 1: Send the type ID so the server knows which handler to use.
 	let type_id = R::type_id();
 	stream
 		.write_u32(type_id)
@@ -72,7 +89,7 @@ where
 
 	tracing::debug!(type_id = format!("0x{:08x}", type_id), "sent type ID");
 
-	// Then send request payload
+	// Step 2: Serialize and send the actual request data
 	let request_bytes = rmp_serde::to_vec(request).map_err(Error::Encoding)?;
 
 	tracing::debug!(payload =? request_bytes, "encoded request payload");
