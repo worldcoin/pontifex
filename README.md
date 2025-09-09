@@ -66,8 +66,12 @@ const ENCLAVE_CID: u32 = 100;
 const ENCLAVE_PORT: u32 = 1000;
 
 let connection = ConnectionDetails::new(ENCLAVE_CID, ENCLAVE_PORT);
-let response: HealthStatus = send(&connection, &HealthCheck).await?;
+let response: HealthStatus = send(connection, &HealthCheck).await?;
 ```
+
+## Example
+
+See the [`example`](example) directory for a complete working example.
 
 ## License
 
