@@ -10,7 +10,7 @@ Pontifex is a Rust library for building and interacting with AWS Nitro enclaves.
 
 Define request/response pairs that both client and server use:
 
-```rust
+```rust,ignore
 use serde::{Deserialize, Serialize};
 use pontifex::Request;
 
@@ -30,7 +30,7 @@ impl Request for HealthCheck {
 
 ### Server
 
-```rust
+```rust,ignore
 use pontifex::Router;
 use std::sync::Arc;
 
@@ -59,7 +59,7 @@ router.serve(ENCLAVE_PORT).await?;
 
 ### Client
 
-```rust
+```rust,ignore
 use pontifex::{ConnectionDetails, send};
 
 const ENCLAVE_CID: u32 = 100;

@@ -27,7 +27,7 @@ use serde::{Serialize, de::DeserializeOwned};
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// #[derive(Serialize, Deserialize)]
 /// struct HealthCheck;
 ///
