@@ -2,6 +2,17 @@
 
 
 
+## [1.0.1] - 2025-09-11
+
+## What's Changed
+* feat: Remove Arc by default states by @Takaros999 in https://github.com/worldcoin/pontifex/pull/16
+
+
+**Full Changelog**: https://github.com/worldcoin/pontifex/compare/1.0.0...1.0.1
+
+
+
+
 ## [1.0.0] - 2025-09-11
 
 ## What's Changed
