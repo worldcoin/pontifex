@@ -53,11 +53,7 @@ pub enum Error {
 /// outlet standard - different appliances (handlers) work differently internally,
 /// but they all plug into the same socket (implement this trait).
 trait Handler<S>: Send + Sync {
-	fn handle<'a>(
-		&'a self,
-		stream: &'a mut Stream,
-		state: Arc<S>,
-	) -> BoxFuture<'a, Result<(), Error>>;
+	fn handle<'a>(&'a self, stream: &'a mut Stream, state: S) -> BoxFuture<'a, Result<(), Error>>;
 }
 
 /// A wrapper that allows strongly-typed handlers to work with the type-erased system.
@@ -88,7 +84,7 @@ trait Handler<S>: Send + Sync {
 struct TypedHandler<R, S, H, Fut>
 where
 	R: Request,
-	H: Fn(Arc<S>, R) -> Fut + Send + Sync,
+	H: Fn(S, R) -> Fut + Send + Sync,
 	Fut: Future<Output = R::Response> + Send,
 {
 	handler: H,                    // The actual user-provided handler function
@@ -101,14 +97,10 @@ impl<R, S, H, Fut> Handler<S> for TypedHandler<R, S, H, Fut>
 where
 	R: Request,
 	S: Clone + Send + Sync + 'static,
-	H: Fn(Arc<S>, R) -> Fut + Send + Sync,
+	H: Fn(S, R) -> Fut + Send + Sync,
 	Fut: Future<Output = R::Response> + Send,
 {
-	fn handle<'a>(
-		&'a self,
-		stream: &'a mut Stream,
-		state: Arc<S>,
-	) -> BoxFuture<'a, Result<(), Error>> {
+	fn handle<'a>(&'a self, stream: &'a mut Stream, state: S) -> BoxFuture<'a, Result<(), Error>> {
 		Box::pin(async move {
 			// At this point, we know the concrete type R (e.g., HealthCheck),
 			// so we can correctly deserialize the incoming bytes
@@ -178,9 +170,11 @@ where
 /// The router supports both stateless and stateful handlers:
 /// - `Router::new()` creates a stateless router (`Router<()>`)
 /// - `Router::with_state(state)` creates a stateful router (`Router<S>`)
+///
+/// **Warning**: Use `Arc<S>` for expensive states.
 pub struct Router<S = ()> {
 	routes: HashMap<u32, Box<dyn Handler<S>>>, // Maps type IDs to their handlers
-	state: Arc<S>, // Shared application state (wrapped in Arc for cheap cloning)
+	state: S,                                  // Shared application state
 }
 
 impl Router<()> {
@@ -201,7 +195,7 @@ impl Router<()> {
 	pub fn new() -> Self {
 		Self {
 			routes: HashMap::new(),
-			state: Arc::new(()),
+			state: (),
 		}
 	}
 }
@@ -232,7 +226,7 @@ where
 	pub fn with_state(state: S) -> Self {
 		Self {
 			routes: HashMap::new(),
-			state: Arc::new(state),
+			state,
 		}
 	}
 
@@ -247,7 +241,7 @@ where
 	///
 	/// ```rust,ignore
 	/// router.route::<HealthCheck>(|state, req| async move {
-	///     // state is Arc<AppState> - cheap to clone!
+	///     // state is AppState - cheap to clone!
 	///     // Access fields with state.field_name
 	///     HealthStatus { ok: true }
 	/// })
@@ -256,7 +250,7 @@ where
 	pub fn route<R, H, Fut>(mut self, handler: H) -> Self
 	where
 		R: Request,
-		H: Fn(Arc<S>, R) -> Fut + Send + Sync + 'static,
+		H: Fn(S, R) -> Fut + Send + Sync + 'static,
 		Fut: Future<Output = R::Response> + Send + 'static,
 	{
 		let type_id = R::type_id();
@@ -351,6 +345,5 @@ where
 	// 1. Deserialize the stream to the correct request type
 	// 2. Call the user's handler function with typed parameters
 	// 3. Serialize and send the typed response
-	// Note: We clone the Arc (cheap!) not the state itself
-	handler.handle(stream, Arc::clone(&router.state)).await
+	handler.handle(stream, router.state.clone()).await
 }

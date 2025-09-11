@@ -48,7 +48,8 @@ struct AppState {
     db: Database,
 }
 
-let router = Router::with_state(AppState { db: Database::new() })
+// ⚠️ Warning: Remember to wrap expensive states with Arc
+let router = Router::with_state(Arc::new(AppState { db: Database::new() }))
     .route::<GetUser, _, _>(|state: Arc<AppState>, req| async move {
         // Handlers receive Arc<State> for cheap cloning
         state.db.get_user(req.id).await
