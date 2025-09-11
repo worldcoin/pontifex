@@ -2,6 +2,17 @@
 
 
 
+## [1.0.0] - 2025-09-11
+
+## What's Changed
+* feat: Add Router API (Breaking Change) by @Takaros999 in https://github.com/worldcoin/pontifex/pull/14
+
+
+**Full Changelog**: https://github.com/worldcoin/pontifex/compare/0.1.5...1.0.0
+
+
+
+
 ## [0.1.5] - 2025-09-08
 
 ## What's Changed
