@@ -1,4 +1,3 @@
-use serde::{Deserialize, Serialize};
 use std::io;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -42,19 +41,38 @@ pub enum Error {
 	Reading(CodingKey, io::Error),
 }
 
-/// Send a request to the enclave and receive a response.
+/// Send a type-safe request to the enclave and receive its corresponding response.
+///
+/// This function leverages Rust's type system to ensure you can only receive
+/// the correct response type for your request. The compiler will prevent you
+/// from expecting the wrong response type.
+///
+/// # How It Works
+///
+/// 1. The function first sends a type identifier (hash of `ROUTE_ID`) to tell
+///    the server which handler to use
+/// 2. Then it sends the serialized request payload
+/// 3. The server uses the type ID to route to the correct handler
+/// 4. The response is automatically deserialized to the correct type
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let health_check = HealthCheck {};
+/// let response: HealthStatus = send(connection, &health_check).await?;
+/// // The compiler ensures response is HealthStatus, not some other type
+/// ```
 ///
 /// # Errors
 ///
-/// - If the connection fails.
-/// - If the request fails to be encoded.
-/// - If the response fails to be decoded.
-/// - If the request fails to be sent.
-/// - If the response fails to be received.
-pub async fn send<Req, Res>(connection: ConnectionDetails, payload: &Req) -> Result<Res, Error>
+/// - `Error::Connection`: Failed to connect to the enclave
+/// - `Error::Encoding`: Failed to serialize the request
+/// - `Error::Writing`: Failed to send data to the enclave  
+/// - `Error::Reading`: Failed to receive data from the enclave
+/// - `Error::Decoding`: Failed to deserialize the response
+pub async fn send<R>(connection: ConnectionDetails, request: &R) -> Result<R::Response, Error>
 where
-	Req: Serialize + Sync,
-	Res: for<'de> Deserialize<'de>,
+	R: crate::Request,
 {
 	let mut stream = Stream::connect(connection.cid, connection.port)
 		.await
@@ -62,23 +80,33 @@ where
 
 	tracing::debug!("established connection to enclave");
 
-	let request = rmp_serde::to_vec(payload).map_err(Error::Encoding)?;
-
-	tracing::debug!(payload =? request, "encoded request payload");
-
+	// Step 1: Send the type ID so the server knows which handler to use.
+	let type_id = R::type_id();
 	stream
-		.write_u64(request.len() as u64)
+		.write_u32(type_id)
 		.await
 		.map_err(|e| Error::Writing(CodingKey::Length, e))?;
 
-	tracing::debug!(length = request.len(), "sent request length");
+	tracing::debug!(type_id = format!("0x{:08x}", type_id), "sent type ID");
+
+	// Step 2: Serialize and send the actual request data
+	let request_bytes = rmp_serde::to_vec(request).map_err(Error::Encoding)?;
+
+	tracing::debug!(payload =? request_bytes, "encoded request payload");
 
 	stream
-		.write_all(&request)
+		.write_u64(request_bytes.len() as u64)
+		.await
+		.map_err(|e| Error::Writing(CodingKey::Length, e))?;
+
+	tracing::debug!(length = request_bytes.len(), "sent request length");
+
+	stream
+		.write_all(&request_bytes)
 		.await
 		.map_err(|e| Error::Writing(CodingKey::Payload, e))?;
 
-	tracing::debug!(payload =? request, "sent encoded request payload");
+	tracing::debug!(payload =? request_bytes, "sent encoded request payload");
 
 	let len = stream
 		.read_u64()
