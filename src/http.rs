@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use hyper::Client;
 use hyper_rustls::HttpsConnector;
 use tokio_vsock::VsockAddr;
@@ -56,8 +58,12 @@ pub type HttpClient = Client<HttpsConnector<VSockClientBuilder>>;
 ///   the fixed vsock address (CID 3 + `vsock_proxy_port`), while preserving
 ///   Host/SNI for end-to-end TLS to the upstream.
 pub fn client(vsock_proxy_port: u32) -> HttpClient {
-	Client::builder().build(vsock_proxy(VsockAddr::new(
-		VSOCK_PROXY_CID,
-		vsock_proxy_port,
-	)))
+	Client::builder()
+		.http2_only(true)
+		.http2_keep_alive_interval(Some(Duration::from_secs(30)))
+		.http2_keep_alive_timeout(Duration::from_secs(10))
+		.build(vsock_proxy(VsockAddr::new(
+			VSOCK_PROXY_CID,
+			vsock_proxy_port,
+		)))
 }
