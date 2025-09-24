@@ -4,7 +4,7 @@ use hyper::Client;
 use hyper_rustls::HttpsConnector;
 use tokio_vsock::VsockAddr;
 
-use crate::utils::http::vsock_proxy;
+use crate::utils::http::{vsock_proxy, vsock_proxy_http2_only};
 
 // Re-export VSockClientBuilder for public use
 pub use crate::utils::http::VSockClientBuilder;
@@ -60,9 +60,47 @@ pub type HttpClient = Client<HttpsConnector<VSockClientBuilder>>;
 pub fn client(vsock_proxy_port: u32) -> HttpClient {
 	Client::builder()
 		.http2_only(true)
+		.http2_adaptive_window(false)  // Prevent large window updates
 		.http2_keep_alive_interval(Some(Duration::from_secs(30)))
 		.http2_keep_alive_timeout(Duration::from_secs(10))
 		.build(vsock_proxy(VsockAddr::new(
+			VSOCK_PROXY_CID,
+			vsock_proxy_port,
+		)))
+}
+
+/// Configuration for an HTTPS client that tunnels all requests through the host's vsock proxy and only uses HTTP/2.
+pub struct Http2ClientConfig {
+	initial_stream_window_size: Option<u32>,
+	initial_connection_window_size: Option<u32>,
+	adaptive_window: bool,
+	keep_alive_interval: Option<Duration>,
+	keep_alive_timeout: Duration,
+}
+
+impl Default for Http2ClientConfig {
+	fn default() -> Self {
+		Self {
+			initial_stream_window_size: None,
+			initial_connection_window_size: None,
+			adaptive_window: false,
+			keep_alive_interval: None,
+			// Hyper's default is 20 seconds
+			keep_alive_timeout: Duration::from_secs(20),
+		}
+	}
+}
+
+/// Creates an HTTPS client that tunnels all requests through the host's vsock proxy and only uses HTTP/2.
+pub fn client_http2_only(vsock_proxy_port: u32, config: Http2ClientConfig) -> HttpClient {
+	Client::builder()
+		.http2_only(true)
+		.http2_adaptive_window(config.adaptive_window)
+		.http2_keep_alive_interval(config.keep_alive_interval)
+		.http2_keep_alive_timeout(config.keep_alive_timeout)
+		.http2_initial_stream_window_size(config.initial_stream_window_size)
+		.http2_initial_connection_window_size(config.initial_connection_window_size)
+		.build(vsock_proxy_http2_only(VsockAddr::new(
 			VSOCK_PROXY_CID,
 			vsock_proxy_port,
 		)))

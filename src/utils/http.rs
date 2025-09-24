@@ -21,6 +21,16 @@ pub fn vsock_proxy(address: VsockAddr) -> HttpsConnector<VSockClientBuilder> {
 	HttpsConnector::from((VSockClientBuilder { address }, cc))
 }
 
+pub fn vsock_proxy_http2_only(address: VsockAddr) -> HttpsConnector<VSockClientBuilder> {
+	let mut cc = rustls::ClientConfig::builder()
+		.with_webpki_roots()
+		.with_no_client_auth();
+
+	cc.alpn_protocols = vec![b"h2".to_vec()];
+
+	HttpsConnector::from((VSockClientBuilder { address }, cc))
+}
+
 /// A connector builder for creating vsock-based HTTP(S) connections.
 ///
 /// This type implements hyper's `Service` trait to create connections through
