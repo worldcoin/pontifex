@@ -92,7 +92,8 @@ impl Default for Http2ClientConfig {
 }
 
 /// Creates an HTTPS client that tunnels all requests through the host's vsock proxy and only uses HTTP/2.
-pub fn client_http2_only(vsock_proxy_port: u32, config: Http2ClientConfig) -> HttpClient {
+#[must_use]
+pub fn client_http2_only(vsock_proxy_port: u32, config: &Http2ClientConfig) -> HttpClient {
 	Client::builder()
 		.http2_only(true)
 		.http2_adaptive_window(config.adaptive_window)
