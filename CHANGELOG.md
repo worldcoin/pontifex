@@ -2,6 +2,17 @@
 
 
 
+## [1.1.0] - 2025-09-25
+
+## What's Changed
+* feat: Support http2 only client  by @Takaros999 in https://github.com/worldcoin/pontifex/pull/18
+
+
+**Full Changelog**: https://github.com/worldcoin/pontifex/compare/1.0.1...1.1.0
+
+
+
+
 ## [1.0.1] - 2025-09-11
 
 ## What's Changed
