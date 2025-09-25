@@ -2,6 +2,17 @@
 
 
 
+## [1.1.1] - 2025-09-25
+
+## What's Changed
+* ci: Fix CI by adding toolchain componenents by @Takaros999 in https://github.com/worldcoin/pontifex/pull/20
+
+
+**Full Changelog**: https://github.com/worldcoin/pontifex/compare/1.1.0...1.1.1
+
+
+
+
 ## [1.1.0] - 2025-09-25
 
 ## What's Changed
