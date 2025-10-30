@@ -293,7 +293,7 @@ where
 		// Initialize the secure module global if the feature is enabled.
 		#[cfg(feature = "nsm")]
 		{
-			crate::nsm::init_global_nsm()
+			crate::nsm::SecureModule::try_init_global()
 				.await
 				.map_err(Error::NsmConnect)?;
 		}

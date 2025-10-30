@@ -148,6 +148,19 @@ impl SecureModule {
 		Self::try_global().expect("NSM global not initialized")
 	}
 
+	/// Attempts to get global NSM instance, initializing it if necessary.
+	///
+	/// # Errors
+	///
+	///	Propagates `io::Error` if the connection to the NSM fails.
+	pub async fn try_init_global() -> io::Result<&'static Self> {
+		let nsm = Self::connect()?;
+
+		let secure_module = SECURE_MODULE_GLOBAL.get_or_init(|| async { nsm }).await;
+
+		Ok(secure_module)
+	}
+
 	/// Disconnect from the NSM driver.
 	pub fn disconnect(self) {
 		drop(self);
@@ -159,19 +172,6 @@ impl Drop for SecureModule {
 	fn drop(&mut self) {
 		nsm_exit(self.fd);
 	}
-}
-
-/// Initialize the global NSM instance.
-///
-/// # Errors
-/// Propagates `io::Error` if the connection to the NSM fails.
-#[cfg(feature = "nsm")]
-pub async fn init_global_nsm() -> io::Result<()> {
-	let nsm = SecureModule::connect()?;
-
-	SECURE_MODULE_GLOBAL.get_or_init(|| async { nsm }).await;
-
-	Ok(())
 }
 
 #[cfg(test)]
