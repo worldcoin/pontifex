@@ -118,7 +118,11 @@ impl SecureModule {
 		Self::parse_raw_attestation_doc(&document)
 	}
 
-	fn parse_raw_attestation_doc(document: &[u8]) -> Result<AttestationDoc, AttestationError> {
+	/// Parse a raw attestation document into an `AttestationDoc`.
+	///
+	/// # Errors
+	/// Returns an error if the document cannot be decoded.
+	pub fn parse_raw_attestation_doc(document: &[u8]) -> Result<AttestationDoc, AttestationError> {
 		let cose_document = CoseSign1::from_bytes(document).map_err(AttestationError::Cose)?;
 
 		let cbor_attestation_doc = cose_document
