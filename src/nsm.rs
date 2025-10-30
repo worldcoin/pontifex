@@ -152,7 +152,7 @@ impl SecureModule {
 	///
 	/// # Errors
 	///
-	///	Propagates `io::Error` if the connection to the NSM fails.
+	/// Propagates `io::Error` if the connection to the NSM fails.
 	pub async fn try_init_global() -> io::Result<&'static Self> {
 		let nsm = Self::connect()?;
 
