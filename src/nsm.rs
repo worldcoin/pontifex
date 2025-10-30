@@ -161,6 +161,19 @@ impl Drop for SecureModule {
 	}
 }
 
+/// Initialize the global NSM instance.
+///
+/// # Errors
+/// Throws an `AttestationError::NsmConnect` if the connection to the NSM fails.
+#[cfg(feature = "nsm")]
+pub async fn init_global_nsm() -> io::Result<()> {
+	let nsm = SecureModule::connect()?;
+
+	SECURE_MODULE_GLOBAL.get_or_init(|| async { nsm }).await;
+
+	Ok(())
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
