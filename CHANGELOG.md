@@ -2,6 +2,18 @@
 
 
 
+## [1.1.2] - 2025-11-03
+
+## What's Changed
+* feat: Setup dependabot by @Takaros999 in https://github.com/worldcoin/pontifex/pull/22
+* feat: Expose nsm init and parse attestation by @Takaros999 in https://github.com/worldcoin/pontifex/pull/26
+
+
+**Full Changelog**: https://github.com/worldcoin/pontifex/compare/1.1.1...1.1.2
+
+
+
+
 ## [1.1.1] - 2025-09-25
 
 ## What's Changed
