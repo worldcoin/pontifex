@@ -118,7 +118,11 @@ impl SecureModule {
 		Self::parse_raw_attestation_doc(&document)
 	}
 
-	fn parse_raw_attestation_doc(document: &[u8]) -> Result<AttestationDoc, AttestationError> {
+	/// Parse a raw attestation document into an `AttestationDoc`.
+	///
+	/// # Errors
+	/// Returns an error if the document cannot be decoded.
+	pub fn parse_raw_attestation_doc(document: &[u8]) -> Result<AttestationDoc, AttestationError> {
 		let cose_document = CoseSign1::from_bytes(document).map_err(AttestationError::Cose)?;
 
 		let cbor_attestation_doc = cose_document
@@ -146,6 +150,19 @@ impl SecureModule {
 	#[must_use]
 	pub fn global() -> &'static Self {
 		Self::try_global().expect("NSM global not initialized")
+	}
+
+	/// Attempts to get global NSM instance, initializing it if necessary.
+	///
+	/// # Errors
+	///
+	/// Propagates `io::Error` if the connection to the NSM fails.
+	pub async fn try_init_global() -> io::Result<&'static Self> {
+		let nsm = Self::connect()?;
+
+		let secure_module = SECURE_MODULE_GLOBAL.get_or_init(|| async { nsm }).await;
+
+		Ok(secure_module)
 	}
 
 	/// Disconnect from the NSM driver.

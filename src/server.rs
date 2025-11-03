@@ -293,16 +293,9 @@ where
 		// Initialize the secure module global if the feature is enabled.
 		#[cfg(feature = "nsm")]
 		{
-			match crate::SecureModule::connect() {
-				Ok(nsm) => {
-					crate::nsm::SECURE_MODULE_GLOBAL
-						.get_or_init(|| async { nsm })
-						.await
-				},
-				Err(e) => {
-					return Err(Error::NsmConnect(e));
-				},
-			};
+			crate::nsm::SecureModule::try_init_global()
+				.await
+				.map_err(Error::NsmConnect)?;
 		}
 
 		let router = Arc::new(self);
