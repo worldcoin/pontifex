@@ -36,6 +36,14 @@ allow = [
     "Zlib",
 ]
 
+# `webpki` ships its ISC license as a `LICENSE` file but declares no `license`
+# field in its manifest, so the inferred license scores below our confidence
+# threshold. Pin the license to the exact file we reviewed.
+[[licenses.clarify]]
+crate = "webpki"
+expression = "ISC"
+license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
+
 # Ignore unmaintained required crates warning
 [advisories]
 ignore = [
