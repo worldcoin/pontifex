@@ -70,6 +70,26 @@ let connection = ConnectionDetails::new(ENCLAVE_CID, ENCLAVE_PORT);
 let response: HealthStatus = send(connection, &HealthCheck).await?;
 ```
 
+### Attestation Verification
+
+Outside the enclave, the `verify` feature checks an attestation document produced by the NSM:
+COSE Sign1 signature, certificate chain up to the AWS Nitro root, PCR values, and freshness.
+
+```rust,ignore
+use pontifex::verify::{EnclaveAttestationVerifier, PcrMeasurement};
+
+// Verification succeeds if *any* of the allowed configurations matches,
+// which allows supporting multiple enclave software versions at once.
+let verifier = EnclaveAttestationVerifier::new(vec![vec![
+    PcrMeasurement::new(0, pcr0),
+    PcrMeasurement::new(1, pcr1),
+    PcrMeasurement::new(2, pcr2),
+]]);
+
+let attestation = verifier.verify_attestation_document_base64(&attestation_doc_base64)?;
+println!("enclave public key: {}", attestation.enclave_public_key);
+```
+
 ## Example
 
 See the [`example`](example) directory for a complete working example.
