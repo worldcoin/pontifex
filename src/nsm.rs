@@ -1,16 +1,11 @@
 pub use aws_nitro_enclaves_nsm_api::api::{AttestationDoc, Digest, ErrorCode, Request, Response};
 
+use coset::{CborSerializable, CoseSign1};
+
 #[cfg(feature = "nsm")]
 use {
-	aws_nitro_enclaves_cose::{
-		CoseSign1,
-		crypto::{Hash, MessageDigest},
-		error::CoseError,
-	},
-	aws_nitro_enclaves_nsm_api::api::Error,
 	aws_nitro_enclaves_nsm_api::driver::{nsm_exit, nsm_init, nsm_process_request},
 	serde_bytes::ByteBuf,
-	sha2::{Digest as _, Sha256, Sha384, Sha512},
 	std::{io, os::fd::RawFd},
 	tokio::sync::OnceCell,
 };
@@ -31,26 +26,45 @@ pub enum AttestationError {
 	/// Failed to get attestation from NSM.
 	#[error("AttestationError::Nsm: {0:?}")]
 	Nsm(ErrorCode),
-	/// Failed to decode attestation document.
+	/// Failed to decode the CBOR payload of an attestation document.
 	#[error("AttestationError::Encoding: {0}")]
-	Encoding(serde_cbor::error::Error),
-	/// Failed to decode attestation document.
+	Encoding(String),
+	/// Failed to decode the COSE Sign1 envelope of an attestation document.
 	#[error("AttestationError::Cose: {0}")]
-	Cose(aws_nitro_enclaves_cose::error::CoseError),
+	Cose(String),
 }
 
-#[cfg(feature = "nsm")]
-struct Sha2Hasher;
+/// Parse a raw attestation document into an `AttestationDoc`.
+///
+/// This only decodes the document — it does **not** verify the COSE signature, the certificate
+/// chain, the PCR values or the timestamp. Use the `verify` module for that.
+///
+/// # Errors
+/// Returns an error if the document cannot be decoded.
+pub fn parse_raw_attestation_doc(document: &[u8]) -> Result<AttestationDoc, AttestationError> {
+	parse_cose_attestation_doc(document).map(|(_, attestation_doc)| attestation_doc)
+}
 
-#[cfg(feature = "nsm")]
-impl Hash for Sha2Hasher {
-	fn hash(digest: MessageDigest, data: &[u8]) -> Result<Vec<u8>, CoseError> {
-		Ok(match digest {
-			MessageDigest::Sha256 => Sha256::digest(data).to_vec(),
-			MessageDigest::Sha384 => Sha384::digest(data).to_vec(),
-			MessageDigest::Sha512 => Sha512::digest(data).to_vec(),
-		})
-	}
+/// Parse a raw attestation document, returning the COSE Sign1 envelope alongside the decoded
+/// payload. The envelope is what carries the signature, so verification needs both.
+///
+/// # Errors
+/// Returns an error if the document cannot be decoded.
+pub(crate) fn parse_cose_attestation_doc(
+	document: &[u8],
+) -> Result<(CoseSign1, AttestationDoc), AttestationError> {
+	let cose_document =
+		CoseSign1::from_slice(document).map_err(|e| AttestationError::Cose(e.to_string()))?;
+
+	let payload = cose_document
+		.payload
+		.as_ref()
+		.ok_or_else(|| AttestationError::Cose("missing payload in COSE Sign1".to_string()))?;
+
+	let attestation_doc = ciborium::from_reader::<AttestationDoc, _>(payload.as_slice())
+		.map_err(|e| AttestationError::Encoding(e.to_string()))?;
+
+	Ok((cose_document, attestation_doc))
 }
 
 #[cfg(feature = "nsm")]
@@ -123,18 +137,7 @@ impl SecureModule {
 	/// # Errors
 	/// Returns an error if the document cannot be decoded.
 	pub fn parse_raw_attestation_doc(document: &[u8]) -> Result<AttestationDoc, AttestationError> {
-		let cose_document = CoseSign1::from_bytes(document).map_err(AttestationError::Cose)?;
-
-		let cbor_attestation_doc = cose_document
-			.get_payload::<Sha2Hasher>(None)
-			.map_err(AttestationError::Cose)?;
-
-		AttestationDoc::from_binary(&cbor_attestation_doc).map_err(|e| match e {
-			Error::Cbor(e) => AttestationError::Encoding(e),
-			Error::Io(_) => {
-				unreachable!("AttestationDoc::from_binary should not return an IO error")
-			},
-		})
+		crate::nsm::parse_raw_attestation_doc(document)
 	}
 
 	/// Attempt to get the global NSM instance.

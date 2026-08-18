@@ -1,13 +1,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use coset::{AsCborValue, CborSerializable, CoseSign1};
+use coset::CoseSign1;
 use crypto_box::{PublicKey, aead::OsRng};
 use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use webpki::{EndEntityCert, TrustAnchor};
 use x509_cert::{Certificate, der::Decode};
 
-use crate::nsm::AttestationDoc;
+use crate::nsm::{AttestationDoc, parse_cose_attestation_doc};
 
 /// Constants for enclave verification
 pub mod constants;
@@ -177,8 +177,7 @@ impl EnclaveAttestationVerifier {
 		attestation_doc_bytes: &[u8],
 	) -> EnclaveAttestationResult<VerifiedAttestation> {
 		// 1. Syntactical validation
-		let cose_sign1 = Self::parse_cose_sign1(attestation_doc_bytes)?;
-		let attestation = Self::parse_cbor_payload(&cose_sign1)?;
+		let (cose_sign1, attestation) = Self::parse_attestation_doc(attestation_doc_bytes)?;
 
 		// 2. Semantic validation
 		let leaf_cert = self.verify_certificate_chain(&attestation)?;
@@ -196,7 +195,9 @@ impl EnclaveAttestationVerifier {
 		))
 	}
 
-	fn parse_cose_sign1(bytes: &[u8]) -> EnclaveAttestationResult<CoseSign1> {
+	fn parse_attestation_doc(
+		bytes: &[u8],
+	) -> EnclaveAttestationResult<(CoseSign1, AttestationDoc)> {
 		// Validate before loading into buffer
 		if bytes.is_empty() {
 			return Err(EnclaveAttestationError::AttestationDocumentParseError(
@@ -213,31 +214,8 @@ impl EnclaveAttestationVerifier {
 			));
 		}
 
-		let cbor_value: ciborium::Value = ciborium::from_reader(bytes).map_err(|e| {
-			EnclaveAttestationError::AttestationDocumentParseError(format!(
-				"Failed to parse CBOR: {e}"
-			))
-		})?;
-
-		CoseSign1::from_cbor_value(cbor_value).map_err(|e| {
-			EnclaveAttestationError::AttestationDocumentParseError(format!(
-				"Failed to parse COSE Sign1: {e}"
-			))
-		})
-	}
-
-	fn parse_cbor_payload(cose_sign1: &CoseSign1) -> EnclaveAttestationResult<AttestationDoc> {
-		let payload = cose_sign1.payload.as_ref().ok_or_else(|| {
-			EnclaveAttestationError::AttestationDocumentParseError(
-				"Missing payload in COSE Sign1".to_string(),
-			)
-		})?;
-
-		ciborium::from_reader::<AttestationDoc, _>(payload.as_slice()).map_err(|e| {
-			EnclaveAttestationError::AttestationDocumentParseError(format!(
-				"Failed to parse attestation document: {e}"
-			))
-		})
+		parse_cose_attestation_doc(bytes)
+			.map_err(|e| EnclaveAttestationError::AttestationDocumentParseError(e.to_string()))
 	}
 
 	fn verify_certificate_chain(
@@ -336,62 +314,34 @@ impl EnclaveAttestationVerifier {
 			))
 		})?;
 
-		let signature = &cose_sign1.signature;
-
 		// Nitro uses P-384 signatures which should be exactly 96 bytes
-		if signature.len() != 96 {
+		if cose_sign1.signature.len() != 96 {
 			return Err(EnclaveAttestationError::AttestationSignatureInvalid(
 				format!(
 					"Invalid signature length: expected 96 bytes, got {}",
-					signature.len()
+					cose_sign1.signature.len()
 				),
 			));
 		}
 
-		// Reconstruct the signed data according to COSE Sign1 structure
-		let protected_bytes = cose_sign1.protected.clone().to_vec().map_err(|e| {
-			EnclaveAttestationError::AttestationSignatureInvalid(format!(
-				"Failed to serialize protected headers: {e}"
-			))
-		})?;
-
-		let payload = cose_sign1.payload.as_ref().ok_or_else(|| {
-			EnclaveAttestationError::AttestationSignatureInvalid(
-				"Missing payload in COSE Sign1".to_string(),
-			)
-		})?;
-
-		// Create the Sig_structure for COSE_Sign1
-		let mut sig_structure = Vec::new();
-		let sig_structure_cbor = ciborium::Value::Array(vec![
-			ciborium::Value::Text("Signature1".to_string()),
-			ciborium::Value::Bytes(protected_bytes),
-			ciborium::Value::Bytes(vec![]),
-			ciborium::Value::Bytes(payload.clone()),
-		]);
-
-		ciborium::into_writer(&sig_structure_cbor, &mut sig_structure).map_err(|e| {
-			EnclaveAttestationError::AttestationSignatureInvalid(format!(
-				"Failed to encode Sig_structure: {e}"
-			))
-		})?;
-
-		// Parse and verify the signature
-		let ecdsa_signature = Signature::try_from(signature.as_slice()).map_err(|e| {
-			EnclaveAttestationError::AttestationSignatureInvalid(format!(
-				"Failed to parse ECDSA signature (need 96 raw bytes): {e}"
-			))
-		})?;
-
-		verifying_key
-			.verify(&sig_structure, &ecdsa_signature)
-			.map_err(|e| {
+		// `verify_signature` reconstructs the COSE Sign1 `Sig_structure`
+		// (`["Signature1", protected, external_aad, payload]`) and hands it to the closure
+		// alongside the signature. Nitro attestations carry no external AAD.
+		cose_sign1.verify_signature(&[], |signature, signed_data| {
+			let ecdsa_signature = Signature::try_from(signature).map_err(|e| {
 				EnclaveAttestationError::AttestationSignatureInvalid(format!(
-					"Signature verification failed: {e}"
+					"Failed to parse ECDSA signature (need 96 raw bytes): {e}"
 				))
 			})?;
 
-		Ok(())
+			verifying_key
+				.verify(signed_data, &ecdsa_signature)
+				.map_err(|e| {
+					EnclaveAttestationError::AttestationSignatureInvalid(format!(
+						"Signature verification failed: {e}"
+					))
+				})
+		})
 	}
 
 	fn validate_pcr_values(&self, attestation: &AttestationDoc) -> EnclaveAttestationResult<()> {
