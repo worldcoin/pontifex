@@ -39,6 +39,25 @@ allow = [
 # Ignore unmaintained required crates warning
 [advisories]
 ignore = [
-    "RUSTSEC-2024-0436", # Unmaintained `paste` (2025-08-07)
     "RUSTSEC-2021-0127", # Unmaintained `serde_cbor` (requires upstream update, see https://github.com/aws/aws-nitro-enclaves-nsm-api/pull/56)
 ]
+
+# Known-failing advisories, deliberately NOT ignored so they stay visible:
+#
+#   RUSTSEC-2026-0258                     h2 0.3.x        (no fix on the 0.3 line, patched in 0.4.16)
+#   RUSTSEC-2026-0098/-0099/-0104         rustls-webpki 0.101.7 via rustls 0.21
+#   RUSTSEC-2026-0049/-0098/-0099/-0104   rustls-webpki 0.102.8 via rustls 0.22
+#
+# All of them are downstream of the `hyper 0.14` pin and cannot be resolved by bumping versions:
+#
+#   - `hyper-rustls` 0.26+ requires hyper 1.x, and `rustls` 0.22 is the newest release
+#     `hyper-rustls` 0.25 accepts, so `rustls-webpki` cannot move past 0.102 while we are on
+#     hyper 0.14.
+#   - `aws-smithy-http-client`'s `hyper-014` feature brings its own hyper 0.14 + rustls 0.21 +
+#     h2 0.3. Its hyper-1 (`default-client`) path exposes no public API for supplying a custom
+#     transport connector — `hyper_014::HyperClientBuilder::build(connector)` is the only entry
+#     point that takes one — so `kms` cannot switch without implementing
+#     `aws_smithy_runtime_api::client::http::HttpClient` here.
+#
+# Fixing them therefore means migrating the vsock transport to hyper 1.x + hyper-util, which
+# changes the public `http::HttpClient` type.
