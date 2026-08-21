@@ -1,34 +1,63 @@
-use hyper::{
-	Uri,
-	client::connect::{Connected, Connection},
-	service::Service,
-};
-use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
 use std::{
 	io,
 	net::Shutdown,
 	pin::Pin,
+	sync::Arc,
 	task::{Context, Poll},
+	time::Duration,
 };
-use tokio::io::{AsyncRead, AsyncWrite};
+
+use hyper::{
+	Uri,
+	rt::{Read, ReadBufCursor, Write},
+};
+use hyper_rustls::{ConfigBuilderExt, HttpsConnector, HttpsConnectorBuilder};
+use hyper_util::{
+	client::legacy::connect::{Connected, Connection},
+	rt::TokioIo,
+};
 use tokio_vsock::{VsockAddr, VsockStream};
+use tower_service::Service;
 
-pub fn vsock_proxy(address: VsockAddr) -> HttpsConnector<VSockClientBuilder> {
-	let cc = rustls::ClientConfig::builder()
-		.with_webpki_roots()
-		.with_no_client_auth();
-
-	HttpsConnector::from((VSockClientBuilder { address }, cc))
+/// An HTTPS-over-vsock connector for HTTP/1.1.
+#[cfg(feature = "kms")]
+pub fn vsock_proxy_http1(
+	address: VsockAddr,
+	connect_timeout: Option<Duration>,
+) -> HttpsConnector<VSockClientBuilder> {
+	tls_builder()
+		.enable_http1()
+		.wrap_connector(VSockClientBuilder {
+			address,
+			connect_timeout,
+		})
 }
 
-pub fn vsock_proxy_http2_only(address: VsockAddr) -> HttpsConnector<VSockClientBuilder> {
-	let mut cc = rustls::ClientConfig::builder()
-		.with_webpki_roots()
-		.with_no_client_auth();
+/// An HTTPS-over-vsock connector that advertises only `h2` over ALPN.
+#[cfg(feature = "http")]
+pub fn vsock_proxy_http2(address: VsockAddr) -> HttpsConnector<VSockClientBuilder> {
+	tls_builder()
+		.enable_http2()
+		.wrap_connector(VSockClientBuilder {
+			address,
+			connect_timeout: None,
+		})
+}
 
-	cc.alpn_protocols = vec![b"h2".to_vec()];
+fn tls_builder() -> HttpsConnectorBuilder<hyper_rustls::builderstates::WantsProtocols1> {
+	// Naming the provider avoids rustls' "could not determine the process-level `CryptoProvider`"
+	// panic, which fires whenever something else in the tree also enables `aws_lc_rs`.
+	let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+		rustls::crypto::ring::default_provider(),
+	))
+	.with_safe_default_protocol_versions()
+	.expect("ring supports the default protocol versions")
+	.with_webpki_roots()
+	.with_no_client_auth();
 
-	HttpsConnector::from((VSockClientBuilder { address }, cc))
+	HttpsConnectorBuilder::new()
+		.with_tls_config(config)
+		.https_or_http()
 }
 
 /// A connector builder for creating vsock-based HTTP(S) connections.
@@ -39,10 +68,11 @@ pub fn vsock_proxy_http2_only(address: VsockAddr) -> HttpsConnector<VSockClientB
 #[derive(Debug, Clone, Copy)]
 pub struct VSockClientBuilder {
 	address: VsockAddr,
+	connect_timeout: Option<Duration>,
 }
 
 pub struct VSockClient {
-	stream: Option<VsockStream>,
+	io: TokioIo<VsockStream>,
 }
 
 impl VSockClient {
@@ -50,18 +80,8 @@ impl VSockClient {
 		let stream = VsockStream::connect(address).await?;
 
 		Ok(Self {
-			stream: Some(stream),
+			io: TokioIo::new(stream),
 		})
-	}
-
-	fn with_pinned_stream<T>(&mut self, closure: impl FnOnce(Pin<&mut VsockStream>) -> T) -> T {
-		let mut stream = self.stream.take().expect("stream is None");
-		let pinned_stream = Pin::new(&mut stream);
-
-		let result = closure(pinned_stream);
-
-		self.stream = Some(stream);
-		result
 	}
 }
 
@@ -75,46 +95,59 @@ impl Service<Uri> for VSockClientBuilder {
 	}
 
 	fn call(&mut self, _: Uri) -> Self::Future {
-		Box::pin(VSockClient::connect(self.address))
+		let address = self.address;
+
+		let Some(timeout) = self.connect_timeout else {
+			return Box::pin(VSockClient::connect(address));
+		};
+
+		Box::pin(async move {
+			tokio::time::timeout(timeout, VSockClient::connect(address))
+				.await
+				.map_err(|_| {
+					io::Error::new(
+						io::ErrorKind::TimedOut,
+						format!("vsock connect to {address:?} timed out after {timeout:?}"),
+					)
+				})?
+		})
 	}
 }
 
-impl AsyncRead for VSockClient {
+impl Read for VSockClient {
 	fn poll_read(
 		mut self: Pin<&mut Self>,
 		cx: &mut Context<'_>,
-		buf: &mut tokio::io::ReadBuf<'_>,
+		buf: ReadBufCursor<'_>,
 	) -> Poll<io::Result<()>> {
-		self.with_pinned_stream(|stream| stream.poll_read(cx, buf))
+		Pin::new(&mut self.io).poll_read(cx, buf)
 	}
 }
 
-impl AsyncWrite for VSockClient {
+impl Write for VSockClient {
 	fn poll_write(
 		mut self: Pin<&mut Self>,
 		cx: &mut Context<'_>,
 		buf: &[u8],
 	) -> Poll<Result<usize, io::Error>> {
-		self.with_pinned_stream(|stream| stream.poll_write(cx, buf))
+		Pin::new(&mut self.io).poll_write(cx, buf)
 	}
 
 	fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-		self.with_pinned_stream(|stream| stream.poll_flush(cx))
+		Pin::new(&mut self.io).poll_flush(cx)
 	}
 
 	fn poll_shutdown(
 		mut self: Pin<&mut Self>,
 		cx: &mut Context<'_>,
 	) -> Poll<Result<(), io::Error>> {
-		self.with_pinned_stream(|stream| stream.poll_shutdown(cx))
+		Pin::new(&mut self.io).poll_shutdown(cx)
 	}
 }
 
 impl Drop for VSockClient {
 	fn drop(&mut self) {
-		self.stream
-			.as_ref()
-			.map(|stream| stream.shutdown(Shutdown::Both));
+		_ = self.io.inner().shutdown(Shutdown::Both);
 	}
 }
 
