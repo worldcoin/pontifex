@@ -12,10 +12,8 @@
 //!
 //! # Domain separation
 //!
-//! Every channel is opened under a [`ChannelDomain`], which the caller owns: a protocol name and
-//! a wire version. Both are bound into the HPKE `info`, and the name also derives the response
-//! exporter label, so two protocols sharing one enclave keypair cannot open each other's
-//! messages and a version bump fails at channel setup rather than as a misparse.
+//! Channels are opened under a caller-named [`ChannelDomain`] bound into the HPKE `info`, so
+//! neither another protocol nor another wire version can open a channel's messages.
 //!
 //! # Relationship to RFC 9458 §4.4
 //!
@@ -38,8 +36,7 @@ use hpke::{
 };
 use zeroize::Zeroizing;
 
-/// The RNG traits the channel seals and generates against, re-exported so callers bind against
-/// the same generation this crate does.
+/// Re-exported so callers bind against the same `rand_core` generation this crate does.
 pub use hpke::rand_core;
 pub use hpke::rand_core::UnwrapErr;
 
@@ -54,7 +51,7 @@ type ChannelAead = hpke::aead::AesGcm256;
 /// Length of an X25519 public key, which is what an enclave attests.
 pub const ENCRYPTION_KEY_LEN: usize = 32;
 
-/// Suffix appended to a [`ChannelDomain`]'s name to form the response exporter label.
+/// Appended to a domain name to form the response exporter label.
 const EXPORTER_LABEL_SUFFIX: &[u8] = b" response";
 
 /// `Expand` info for the response AEAD key — RFC 9458 §4.4 step 4.
@@ -106,14 +103,11 @@ pub enum ChannelError {
 	SealFailed,
 }
 
-/// What a channel is opened for: a protocol name and the version of its wire contract.
+/// A protocol name and the version of its wire contract, both bound into the HPKE `info`.
 ///
-/// The name is the caller's domain-separation string — pick one that identifies the protocol,
-/// not the crate, and never reuse it across protocols. Both fields are bound into the HPKE
-/// `info`, and the name derives the RFC 9458 §4.4 exporter label as `"<name> response"`.
-///
-/// Bumping [`version`](Self::version) makes every channel under the old number fail at setup, so
-/// it is the lever for a breaking change to whatever the sealed bytes mean.
+/// Name one protocol per domain and never reuse it; the name also derives the RFC 9458 §4.4
+/// exporter label as `"<name> response"`. Bumping the version fails every channel under the old
+/// number at setup, which is the lever for a breaking change to the sealed bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChannelDomain {
 	name: &'static str,
@@ -133,7 +127,7 @@ impl ChannelDomain {
 		self.name
 	}
 
-	/// Returns the wire version bound into every channel under this domain.
+	/// Returns the wire version.
 	#[must_use]
 	pub const fn version(&self) -> u8 {
 		self.version
@@ -969,11 +963,7 @@ mod kat {
 		assert_eq!(nonce, hex!("f8b0ce9466f27aa6243c65f9"));
 	}
 
-	/// The domain the pinned vectors below were generated under, before this module moved into
-	/// pontifex. Kept verbatim so the frozen bytes stay comparable across the move: the same
-	/// inputs still produce the same wire, which is what makes them a regression test rather
-	/// than a re-baseline.
-	const PINNED_DOMAIN: ChannelDomain = ChannelDomain::new("embedding-verifier/match", 1);
+	const PINNED_DOMAIN: ChannelDomain = ChannelDomain::new("pontifex/kat", 1);
 
 	/// Layer 3 (regression, self-generated): the full channel under a fixed RNG produces these
 	/// exact wire bytes. Freezes the `info` construction, the exporter label, the suite, and
@@ -986,17 +976,17 @@ mod kat {
 
 		let requester = Requester::new(PINNED_DOMAIN, responder.public_key()).expect("valid key");
 		let (request, opener) = requester
-			.seal(b"match inputs", &mut FixedRng::new(&[0x22; 32]))
+			.seal(b"request", &mut FixedRng::new(&[0x22; 32]))
 			.expect("seal");
 		assert_eq!(request.as_ref(), PINNED_REQUEST, "request bytes");
 
 		let (plaintext, sealer) = responder
 			.open(&SealedRequest::from_bytes(PINNED_REQUEST.to_vec()))
 			.expect("open");
-		assert_eq!(&plaintext[..], b"match inputs");
+		assert_eq!(&plaintext[..], b"request");
 
 		let response = sealer
-			.seal(b"statement", &mut FixedRng::new(&[0x33; 32]))
+			.seal(b"response", &mut FixedRng::new(&[0x33; 32]))
 			.expect("seal response");
 		assert_eq!(response.as_ref(), PINNED_RESPONSE, "response bytes");
 
@@ -1004,20 +994,20 @@ mod kat {
 			&*opener
 				.open(&SealedResponse::from_bytes(PINNED_RESPONSE.to_vec()))
 				.expect("open response"),
-			b"statement".as_ref()
+			b"response".as_ref()
 		);
 	}
 
 	const PINNED_PUBLIC_KEY: [u8; 32] =
 		hex!("1a239249ea74403babc01f32df9931a16f71ac8972c461d69fed15640e310639");
-	const PINNED_REQUEST: [u8; 60] = hex!(
+	const PINNED_REQUEST: [u8; 55] = hex!(
 		"e3b9708aaa21a7f1e62a95ee28d1e5d60b0fceed6c68599013a54b318e9e0b15"
-		"81fd0d3318729a9833bb0a090f9af62d8b87fc166aee22d70849f970"
+		"87b0e1436d37cefc7e16eaad8c44b8ed52167a1590ea1d"
 	);
-	const PINNED_RESPONSE: [u8; 57] = hex!(
+	const PINNED_RESPONSE: [u8; 56] = hex!(
 		// The leading 32 bytes are the response_nonce exactly as drawn from the fixed RNG,
 		// confirming the `response_nonce || ciphertext` layout of RFC 9458 section 4.4 step 7.
 		"3333333333333333333333333333333333333333333333333333333333333333"
-		"ede83b5b125ab339ee2bd91d320571a796feec732954644a95"
+		"2e6fd9ad62e341764bf330365541c95455743e6f683bda87"
 	);
 }

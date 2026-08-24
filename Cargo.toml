@@ -68,8 +68,7 @@ aws-smithy-http-client = { version = "1.0.2", features = ["hyper-014"], optional
 aws-nitro-enclaves-nsm-api = { version = "0.4", optional = true, default-features = false }
 const-fnv1a-hash = "1.1.0"
 
-# `channel` feature. HKDF for the response derivation in RFC 9458 §4.4, pinned to the 0.13 line
-# because that is what `hpke` already resolves for its own HKDF-SHA256.
+# `channel` feature. HKDF 0.13 is what `hpke` already resolves for its own HKDF-SHA256.
 hkdf = { version = "0.13", optional = true }
 # rust-hpke: the only Rust HPKE implementation with an independent security review. Default
 # features are off so `mlkem` does not drag ml-kem, x-wing and sha3 into an enclave image;
@@ -78,10 +77,8 @@ hkdf = { version = "0.13", optional = true }
 hpke = { version = "0.14", default-features = false, features = ["alloc", "x25519", "aes"], optional = true }
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"], optional = true }
 zeroize = { version = "1", default-features = false, features = ["alloc"], optional = true }
-# Renamed rather than shared with the `sha2` above: the channel's SHA-256 must be the generation
-# `hpke` and `hkdf` already resolve for HKDF-SHA256 (0.11), while `nsm-types` is still on 0.10.
-# Enabling both features therefore links two SHA-256 implementations; unify by moving
-# `nsm-types` to 0.11, which is a separate change to `nsm.rs`.
+# Renamed, not shared with the `sha2` above: the channel needs the 0.11 generation `hpke` and
+# `hkdf` resolve, while `nsm-types` is on 0.10. Both features together link two SHA-256s.
 channel-sha2 = { package = "sha2", version = "0.11", default-features = false, optional = true }
 
 [dev-dependencies]

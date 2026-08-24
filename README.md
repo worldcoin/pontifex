@@ -77,9 +77,8 @@ untrusted parent instance forwarding the bytes never sees the plaintext. Request
 (RFC 9180) `mode_base`; responses use the encapsulation construction of RFC 9458 §4.4, which
 replies to one request without a second key exchange.
 
-The enclave generates a keypair per boot and attests its public key. The client verifies the
-attestation, then seals to the key it carried. Both sides name the same `ChannelDomain`, which
-binds a protocol name and wire version into the key schedule.
+The enclave generates a keypair per boot and attests its public key; the client verifies the
+attestation and seals to the key it carried. Both sides name the same `ChannelDomain`.
 
 ```rust,ignore
 use pontifex::channel::{ChannelDomain, Requester, Responder, UnwrapErr};
