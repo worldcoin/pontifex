@@ -70,6 +70,37 @@ let connection = ConnectionDetails::new(ENCLAVE_CID, ENCLAVE_PORT);
 let response: HealthStatus = send(connection, &HealthCheck).await?;
 ```
 
+### Sealed Channel
+
+The `channel` feature adds an end-to-end encrypted channel to a specific enclave boot, so the
+untrusted parent instance forwarding the bytes never sees the plaintext. Requests use HPKE
+(RFC 9180) `mode_base`; responses use the encapsulation construction of RFC 9458 §4.4, which
+replies to one request without a second key exchange.
+
+The enclave generates a keypair per boot and attests its public key. The client verifies the
+attestation, then seals to the key it carried. Both sides name the same `ChannelDomain`, which
+binds a protocol name and wire version into the key schedule.
+
+```rust,ignore
+use pontifex::channel::{ChannelDomain, Requester, Responder, UnwrapErr};
+
+const DOMAIN: ChannelDomain = ChannelDomain::new("my-protocol/match", 1);
+
+// Enclave, once per boot. Attest `responder.public_key()`.
+let responder = Responder::generate(DOMAIN, &mut UnwrapErr(getrandom::SysRng));
+
+// Client, per request, against the key the verified attestation carried.
+let requester = Requester::from_attestation(DOMAIN, attested_public_key)?;
+let (sealed_request, opener) = requester.seal(b"inputs", &mut UnwrapErr(getrandom::SysRng))?;
+
+// Enclave: open the request, seal the one reply it belongs to.
+let (plaintext, sealer) = responder.open(&sealed_request)?;
+let sealed_response = sealer.seal(b"result", &mut UnwrapErr(getrandom::SysRng))?;
+
+// Client: only this requester can open that response.
+let result = opener.open(&sealed_response)?;
+```
+
 ## Example
 
 See the [`example`](example) directory for a complete working example.

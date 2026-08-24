@@ -1,3 +1,18 @@
 {
-  "words": ["cbor", "Cose", "rustls", "thiserror", "vsock", "webpki"]
+  "words": [
+    "aead",
+    "bhttp",
+    "cbor",
+    "Cose",
+    "ciphertext",
+    "encapped",
+    "hkdf",
+    "hpke",
+    "getrandom",
+    "rustls",
+    "thiserror",
+    "vsock",
+    "webpki",
+    "zeroize"
+  ]
 }
