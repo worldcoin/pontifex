@@ -23,13 +23,13 @@ use tower_service::Service;
 #[cfg(feature = "kms")]
 pub fn vsock_proxy_http1(
 	address: VsockAddr,
-	connect_timeout: Duration,
+	connect_timeout: Option<Duration>,
 ) -> ConnectTimeout<HttpsConnector<VSockClientBuilder>> {
 	ConnectTimeout {
 		inner: tls_builder()
 			.enable_http1()
 			.wrap_connector(VSockClientBuilder { address }),
-		timeout: Some(connect_timeout),
+		timeout: connect_timeout,
 	}
 }
 
@@ -231,7 +231,7 @@ mod tests {
 	#[cfg(feature = "kms")]
 	#[test]
 	fn the_http1_connector_keeps_the_bound_it_was_given() {
-		let connector = vsock_proxy_http1(VsockAddr::new(3, 8000), Duration::from_secs(7));
+		let connector = vsock_proxy_http1(VsockAddr::new(3, 8000), Some(Duration::from_secs(7)));
 
 		assert_eq!(connector.timeout(), Some(Duration::from_secs(7)));
 	}
@@ -262,7 +262,7 @@ mod tests {
 	#[cfg(feature = "kms")]
 	#[tokio::test]
 	async fn a_plaintext_uri_is_refused_rather_than_forwarded() {
-		let result = vsock_proxy_http1(VsockAddr::new(3, 8000), Duration::from_secs(1))
+		let result = vsock_proxy_http1(VsockAddr::new(3, 8000), Some(Duration::from_secs(1)))
 			.call(Uri::from_static("http://kms.eu-west-1.amazonaws.com"))
 			.await;
 

@@ -113,11 +113,14 @@ fn bounded_timeouts(configured: Option<&TimeoutConfig>) -> TimeoutConfig {
 		.build()
 }
 
-/// The connect and read timeouts in force for a request. Always bounded.
+/// The connect and read timeouts the orchestrator resolved for a request.
+///
+/// `None` means the caller disabled it. `kms::client` fills in defaults for anything merely unset,
+/// so nothing is re-defaulted here: doing that again would override an explicit `disabled()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Timeouts {
-	connect: Duration,
-	read: Duration,
+	connect: Option<Duration>,
+	read: Option<Duration>,
 }
 
 /// Idle connections one connector keeps per upstream authority. hyper-util's default is unbounded,
@@ -165,43 +168,36 @@ impl HttpClient for VSockHttpClient {
 		settings: &HttpConnectorSettings,
 		_: &RuntimeComponents,
 	) -> SharedHttpConnector {
-		// An explicit setting always wins; the default only fills a gap.
 		let timeouts = Timeouts {
-			connect: settings
-				.connect_timeout()
-				.unwrap_or(DEFAULT_CONNECT_TIMEOUT),
-			read: settings.read_timeout().unwrap_or(DEFAULT_READ_TIMEOUT),
+			connect: settings.connect_timeout(),
+			read: settings.read_timeout(),
 		};
 
-		let cacheable = {
-			let connectors = self
-				.connectors
-				.read()
-				.unwrap_or_else(PoisonError::into_inner);
-
-			if let Some(connector) = connectors.get(&timeouts) {
-				return connector.clone();
-			}
-
-			connectors.len() < MAX_CACHED_CONNECTORS
-		};
+		if let Some(connector) = self
+			.connectors
+			.read()
+			.unwrap_or_else(PoisonError::into_inner)
+			.get(&timeouts)
+		{
+			return connector.clone();
+		}
 
 		// Built before taking the write lock: this constructs a rustls `ClientConfig`, and holding
 		// an exclusive lock across that would serialize every concurrent KMS call behind it.
 		let connector = SharedHttpConnector::new(VSockConnector::new(self.address, timeouts));
+		let mut connectors = self
+			.connectors
+			.write()
+			.unwrap_or_else(PoisonError::into_inner);
 
-		if !cacheable {
+		if connectors.len() >= MAX_CACHED_CONNECTORS && !connectors.contains_key(&timeouts) {
+			drop(connectors);
 			self.warn_cache_full();
 
 			return connector;
 		}
 
-		self.connectors
-			.write()
-			.unwrap_or_else(PoisonError::into_inner)
-			.entry(timeouts)
-			.or_insert(connector)
-			.clone()
+		connectors.entry(timeouts).or_insert(connector).clone()
 	}
 
 	fn connector_metadata(&self) -> Option<ConnectorMetadata> {
@@ -215,7 +211,7 @@ impl HttpClient for VSockHttpClient {
 #[derive(Debug)]
 struct VSockConnector {
 	client: Client<ConnectTimeout<HttpsConnector<VSockClientBuilder>>, SdkBody>,
-	read_timeout: Duration,
+	read_timeout: Option<Duration>,
 }
 
 #[cfg(test)]
@@ -271,15 +267,19 @@ impl HttpConnector for VSockConnector {
 async fn await_headers<B>(
 	response: impl Future<Output = Result<hyper::Response<B>, hyper_util::client::legacy::Error>>,
 	target: &hyper::Uri,
-	read_timeout: Duration,
+	read_timeout: Option<Duration>,
 ) -> Result<hyper::Response<B>, ConnectorError> {
-	tokio::time::timeout(read_timeout, response)
-		.await
-		.map_err(|_| read_timed_out(target, read_timeout))?
-		.map_err(|err| {
-			let is_connect = err.is_connect();
-			classify_error(err, is_connect)
-		})
+	let headers = match read_timeout {
+		Some(timeout) => tokio::time::timeout(timeout, response)
+			.await
+			.map_err(|_| read_timed_out(target, timeout))?,
+		None => response.await,
+	};
+
+	headers.map_err(|err| {
+		let is_connect = err.is_connect();
+		classify_error(err, is_connect)
+	})
 }
 
 /// Addresses are left unset: a vsock peer has no socket address, and nothing on this path
@@ -460,7 +460,7 @@ mod tests {
 		let err = await_headers(
 			never,
 			&hyper::Uri::from_static("https://kms.eu-west-1.amazonaws.com"),
-			Duration::from_secs(5),
+			Some(Duration::from_secs(5)),
 		)
 		.await
 		.expect_err("headers that never arrive must time out");
@@ -534,6 +534,50 @@ mod tests {
 		let err = classify_error(Opaque, false);
 
 		assert!(err.is_other(), "got {err:?}");
+	}
+
+	#[test]
+	fn an_unset_timeout_reaches_the_connector_unset() {
+		use aws_smithy_runtime_api::client::runtime_components::RuntimeComponentsBuilder;
+
+		let client = VSockHttpClient::new(VsockAddr::new(VSOCK_PROXY_CID, 8000));
+		let components = RuntimeComponentsBuilder::for_tests().build().unwrap();
+
+		counting_connectors(|| {
+			client.http_connector(&HttpConnectorSettings::builder().build(), &components);
+		});
+
+		let timeouts = {
+			let connectors = client
+				.connectors
+				.read()
+				.unwrap_or_else(PoisonError::into_inner);
+
+			*connectors.keys().next().expect("one connector")
+		};
+
+		assert_eq!(timeouts.connect, None, "not ours to fill in here");
+		assert_eq!(timeouts.read, None, "not ours to fill in here");
+	}
+
+	#[test]
+	fn the_two_timeouts_are_not_transposed() {
+		let mut connector = None;
+
+		counting_connectors(|| {
+			connector = Some(VSockConnector::new(
+				VsockAddr::new(VSOCK_PROXY_CID, 8000),
+				Timeouts {
+					connect: Some(Duration::from_secs(3)),
+					read: Some(Duration::from_secs(17)),
+				},
+			));
+		});
+
+		assert_eq!(
+			connector.expect("built").read_timeout,
+			Some(Duration::from_secs(17))
+		);
 	}
 
 	/// `CONNECTORS_BUILT` is process-wide, so every test that can build a connector has to go
