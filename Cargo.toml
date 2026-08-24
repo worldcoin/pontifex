@@ -91,3 +91,5 @@ const-fnv1a-hash = "1.1.0"
 
 [dev-dependencies]
 tokio-test = "0.4"
+tokio = { version = "1", features = ["macros", "rt", "test-util", "time"] }
+aws-smithy-runtime-api = { version = "1.9", features = ["client", "http-1x", "test-util"] }

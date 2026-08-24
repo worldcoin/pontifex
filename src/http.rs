@@ -10,8 +10,8 @@ use tokio_vsock::VsockAddr;
 
 use crate::utils::http::vsock_proxy_http2;
 
-// Re-export VSockClientBuilder for public use
-pub use crate::utils::http::VSockClientBuilder;
+// Both appear in `HttpClient`, so callers need to be able to name them.
+pub use crate::utils::http::{ConnectTimeout, VSockClientBuilder};
 
 /// The CID of the vsock proxy.
 pub const VSOCK_PROXY_CID: u32 = 3;
@@ -19,7 +19,7 @@ pub const VSOCK_PROXY_CID: u32 = 3;
 /// A HTTP client that tunnels all requests through the host's vsock proxy.
 ///
 /// `B` is the request body, e.g. `http_body_util::Full<bytes::Bytes>`.
-pub type HttpClient<B> = Client<HttpsConnector<VSockClientBuilder>, B>;
+pub type HttpClient<B> = Client<ConnectTimeout<HttpsConnector<VSockClientBuilder>>, B>;
 
 #[must_use]
 /// Creates an HTTPS client that tunnels all requests through the host's vsock proxy.
@@ -81,12 +81,24 @@ where
 }
 
 /// Configuration for an HTTPS client that tunnels all requests through the host's vsock proxy and only uses HTTP/2.
+///
+/// Build from [`Default`] and adjust what you need; the struct is `non_exhaustive` so that adding a
+/// knob later is not a breaking change.
+#[non_exhaustive]
 pub struct Http2ClientConfig {
-	initial_stream_window_size: Option<u32>,
-	initial_connection_window_size: Option<u32>,
-	adaptive_window: bool,
-	keep_alive_interval: Option<Duration>,
-	keep_alive_timeout: Duration,
+	/// Initial HTTP/2 stream window size. `None` leaves hyper's default in place.
+	pub initial_stream_window_size: Option<u32>,
+	/// Initial HTTP/2 connection window size. `None` leaves hyper's default in place.
+	pub initial_connection_window_size: Option<u32>,
+	/// Whether to let hyper grow the flow-control windows in response to throughput.
+	pub adaptive_window: bool,
+	/// How often to send an HTTP/2 keep-alive ping. `None` disables them.
+	pub keep_alive_interval: Option<Duration>,
+	/// How long to wait for a keep-alive ping response before dropping the connection.
+	pub keep_alive_timeout: Duration,
+	/// Bounds the vsock dial and the TLS handshake together. `None` leaves them unbounded, which
+	/// lets a proxy that accepts the connection and then stalls hang the request forever.
+	pub connect_timeout: Option<Duration>,
 }
 
 impl Default for Http2ClientConfig {
@@ -98,6 +110,7 @@ impl Default for Http2ClientConfig {
 			keep_alive_interval: None,
 			// Hyper's default is 20 seconds
 			keep_alive_timeout: Duration::from_secs(20),
+			connect_timeout: Some(Duration::from_secs(10)),
 		}
 	}
 }
@@ -123,8 +136,8 @@ where
 		.http2_initial_stream_window_size(config.initial_stream_window_size)
 		.http2_initial_connection_window_size(config.initial_connection_window_size);
 
-	builder.build(vsock_proxy_http2(VsockAddr::new(
-		VSOCK_PROXY_CID,
-		vsock_proxy_port,
-	)))
+	builder.build(vsock_proxy_http2(
+		VsockAddr::new(VSOCK_PROXY_CID, vsock_proxy_port),
+		config.connect_timeout,
+	))
 }
