@@ -3,10 +3,7 @@ use std::{
 	collections::HashMap,
 	error::Error,
 	io,
-	sync::{
-		PoisonError, RwLock,
-		atomic::{AtomicBool, Ordering},
-	},
+	sync::{PoisonError, RwLock},
 	time::Duration,
 };
 
@@ -122,17 +119,12 @@ struct Timeouts {
 }
 
 const MAX_IDLE_CONNECTIONS: usize = 8;
-const MAX_CACHED_CONNECTORS: usize = 8;
 
 /// Routes the AWS SDK's HTTP traffic through the host's vsock proxy.
-///
-/// The orchestrator asks for a connector on every request attempt, so connectors are cached to
-/// keep the underlying connection pool alive across requests.
 #[derive(Debug)]
 struct VSockHttpClient {
 	address: VsockAddr,
 	connectors: RwLock<HashMap<Timeouts, SharedHttpConnector>>,
-	cache_full_warned: AtomicBool,
 }
 
 impl VSockHttpClient {
@@ -140,16 +132,6 @@ impl VSockHttpClient {
 		Self {
 			address,
 			connectors: RwLock::default(),
-			cache_full_warned: AtomicBool::new(false),
-		}
-	}
-
-	fn warn_cache_full(&self) {
-		if !self.cache_full_warned.swap(true, Ordering::Relaxed) {
-			tracing::warn!(
-				cap = MAX_CACHED_CONNECTORS,
-				"too many distinct timeout configurations; further ones get their own pool"
-			);
 		}
 	}
 }
@@ -180,13 +162,6 @@ impl HttpClient for VSockHttpClient {
 			.write()
 			.unwrap_or_else(PoisonError::into_inner);
 
-		if connectors.len() >= MAX_CACHED_CONNECTORS && !connectors.contains_key(&timeouts) {
-			drop(connectors);
-			self.warn_cache_full();
-
-			return connector;
-		}
-
 		connectors.entry(timeouts).or_insert(connector).clone()
 	}
 
@@ -204,14 +179,8 @@ struct VSockConnector {
 	read_timeout: Option<Duration>,
 }
 
-#[cfg(test)]
-static CONNECTORS_BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
 impl VSockConnector {
 	fn new(address: VsockAddr, timeouts: Timeouts) -> Self {
-		#[cfg(test)]
-		CONNECTORS_BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
 		let mut builder = Client::builder(TokioExecutor::new());
 
 		builder
@@ -529,9 +498,7 @@ mod tests {
 		let client = VSockHttpClient::new(VsockAddr::new(VSOCK_PROXY_CID, 8000));
 		let components = RuntimeComponentsBuilder::for_tests().build().unwrap();
 
-		counting_connectors(|| {
-			client.http_connector(&HttpConnectorSettings::builder().build(), &components);
-		});
+		client.http_connector(&HttpConnectorSettings::builder().build(), &components);
 
 		let timeouts = {
 			let connectors = client
@@ -548,38 +515,15 @@ mod tests {
 
 	#[test]
 	fn the_two_timeouts_are_not_transposed() {
-		let mut connector = None;
-
-		counting_connectors(|| {
-			connector = Some(VSockConnector::new(
-				VsockAddr::new(VSOCK_PROXY_CID, 8000),
-				Timeouts {
-					connect: Some(Duration::from_secs(3)),
-					read: Some(Duration::from_secs(17)),
-				},
-			));
-		});
-
-		assert_eq!(
-			connector.expect("built").read_timeout,
-			Some(Duration::from_secs(17))
+		let connector = VSockConnector::new(
+			VsockAddr::new(VSOCK_PROXY_CID, 8000),
+			Timeouts {
+				connect: Some(Duration::from_secs(3)),
+				read: Some(Duration::from_secs(17)),
+			},
 		);
-	}
 
-	/// `CONNECTORS_BUILT` is process-wide, so every test that can build a connector has to go
-	/// through this or the counting tests race each other.
-	static COUNTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-	/// Runs `body` with exclusive access to `CONNECTORS_BUILT`, returning how many connectors it
-	/// built.
-	fn counting_connectors(body: impl FnOnce()) -> usize {
-		use std::sync::atomic::Ordering;
-
-		let _guard = COUNTER_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-		let before = CONNECTORS_BUILT.load(Ordering::Relaxed);
-		body();
-
-		CONNECTORS_BUILT.load(Ordering::Relaxed) - before
+		assert_eq!(connector.read_timeout, Some(Duration::from_secs(17)));
 	}
 
 	/// Re-resolving a connector has to hand back the existing one; building a fresh one would give
@@ -597,34 +541,9 @@ mod tests {
 			.connect_timeout(Duration::from_secs(7))
 			.build();
 
-		let built = counting_connectors(|| {
-			client.http_connector(&settings, &components);
-			client.http_connector(&settings, &components);
-			client.http_connector(&other, &components);
-		});
-
-		assert_eq!(
-			built, 2,
-			"two distinct timeout configurations, so exactly two connectors"
-		);
-	}
-
-	#[test]
-	fn the_connector_cache_is_bounded() {
-		use aws_smithy_runtime_api::client::runtime_components::RuntimeComponentsBuilder;
-
-		let client = VSockHttpClient::new(VsockAddr::new(VSOCK_PROXY_CID, 8000));
-		let components = RuntimeComponentsBuilder::for_tests().build().unwrap();
-
-		counting_connectors(|| {
-			for millis in 0..(MAX_CACHED_CONNECTORS as u64 + 5) {
-				let settings = HttpConnectorSettings::builder()
-					.read_timeout(Duration::from_millis(millis + 1))
-					.build();
-
-				client.http_connector(&settings, &components);
-			}
-		});
+		client.http_connector(&settings, &components);
+		client.http_connector(&settings, &components);
+		client.http_connector(&other, &components);
 
 		assert_eq!(
 			client
@@ -632,7 +551,8 @@ mod tests {
 				.read()
 				.unwrap_or_else(PoisonError::into_inner)
 				.len(),
-			MAX_CACHED_CONNECTORS
+			2,
+			"two distinct timeout configurations, so exactly two connectors"
 		);
 	}
 }
