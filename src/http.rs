@@ -9,8 +9,6 @@ use hyper_util::{
 use tokio_vsock::VsockAddr;
 
 use crate::utils::http::vsock_proxy_http2;
-
-// Both appear in `HttpClient`, so callers need to be able to name them.
 pub use crate::utils::http::{ConnectTimeout, VSockClientBuilder};
 
 /// The CID of the vsock proxy.
@@ -80,10 +78,8 @@ where
 	)
 }
 
-/// Configuration for an HTTPS client that tunnels all requests through the host's vsock proxy and only uses HTTP/2.
-///
-/// Build from [`Default`] and adjust what you need; the struct is `non_exhaustive` so that adding a
-/// knob later is not a breaking change.
+/// Configuration for an HTTPS client that tunnels all requests through the host's
+/// vsock proxy and only uses HTTP/2.
 #[non_exhaustive]
 pub struct Http2ClientConfig {
 	/// Initial HTTP/2 stream window size. `None` leaves hyper's default in place.
@@ -125,8 +121,6 @@ where
 	let mut builder = Client::builder(TokioExecutor::new());
 
 	builder
-		// Unlike hyper 0.14, hyper-util does not install a timer of its own, and silently drops
-		// keep-alives and pool idle timeouts without one.
 		.timer(TokioTimer::new())
 		.pool_timer(TokioTimer::new())
 		.http2_only(true)

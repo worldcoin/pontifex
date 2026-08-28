@@ -38,11 +38,11 @@ use crate::utils::http::{ConnectTimeout, VSockClientBuilder, vsock_proxy_http1};
 /// The CID of the vsock proxy.
 pub const VSOCK_PROXY_CID: u32 = 3;
 
-/// Applied when the caller's `SdkConfig` carries no timeout of its own. Connection timeout.
+/// Default timeout for **connections**
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 /// Timeout on reading the response headers.
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
-/// Bounds one attempt end to end.
+/// Total timeout on a requesr
 const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Credentials to use for KMS requests.
@@ -67,7 +67,7 @@ impl Credentials {
 	}
 }
 
-/// Creates a new KMS client. Re-uses a TLS connection pool, avoid re-creating it.
+/// Creates a new KMS client.
 ///
 /// # Timeouts
 ///
@@ -113,22 +113,15 @@ fn bounded_timeouts(configured: Option<&TimeoutConfig>) -> TimeoutConfig {
 		.build()
 }
 
-/// The connect and read timeouts the orchestrator resolved for a request.
-///
-/// `None` means the caller disabled it. `kms::client` fills in defaults for anything merely unset,
-/// so nothing is re-defaulted here: doing that again would override an explicit `disabled()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Timeouts {
+	/// Resolved connection timeout. None = disabled (no limit)
 	connect: Option<Duration>,
+	/// Resolved read timeout. None = disabled (no limit)
 	read: Option<Duration>,
 }
 
-/// Idle connections one connector keeps per upstream authority. hyper-util's default is unbounded,
-/// which an enclave cannot afford.
 const MAX_IDLE_CONNECTIONS: usize = 8;
-
-/// Distinct timeout configurations to cache a connector for. A caller that derives a per-request
-/// timeout from a remaining deadline would otherwise grow this map without bound.
 const MAX_CACHED_CONNECTORS: usize = 8;
 
 /// Routes the AWS SDK's HTTP traffic through the host's vsock proxy.
@@ -151,7 +144,6 @@ impl VSockHttpClient {
 		}
 	}
 
-	/// Once, not once per request: past the cap this fires at the full request rate.
 	fn warn_cache_full(&self) {
 		if !self.cache_full_warned.swap(true, Ordering::Relaxed) {
 			tracing::warn!(
@@ -182,8 +174,6 @@ impl HttpClient for VSockHttpClient {
 			return connector.clone();
 		}
 
-		// Built before taking the write lock: this constructs a rustls `ClientConfig`, and holding
-		// an exclusive lock across that would serialize every concurrent KMS call behind it.
 		let connector = SharedHttpConnector::new(VSockConnector::new(self.address, timeouts));
 		let mut connectors = self
 			.connectors
@@ -282,8 +272,6 @@ async fn await_headers<B>(
 	})
 }
 
-/// Addresses are left unset: a vsock peer has no socket address, and nothing on this path
-/// populates hyper's `HttpInfo`.
 fn connection_metadata(captured: &CaptureConnection) -> Option<ConnectionMetadata> {
 	let proxied = captured.connection_metadata().as_ref()?.is_proxied();
 	let captured = captured.clone();
@@ -429,7 +417,6 @@ mod tests {
 		);
 	}
 
-	/// A caller's own timeout has to win, or configuring one would be pointless.
 	#[test]
 	fn a_configured_timeout_is_not_overridden() {
 		let configured = TimeoutConfig::builder()
@@ -442,7 +429,6 @@ mod tests {
 		assert_eq!(bounded.connect_timeout(), Some(DEFAULT_CONNECT_TIMEOUT));
 	}
 
-	/// `disabled()` is an explicit choice, distinct from leaving a timeout unset.
 	#[test]
 	fn explicitly_disabled_timeouts_stay_disabled() {
 		let bounded = bounded_timeouts(Some(&TimeoutConfig::disabled()));

@@ -47,9 +47,9 @@ pub fn vsock_proxy_http2(
 	}
 }
 
+/// Provides a TLS connection builder which explicitly rejects non-HTTPs connections. The
+/// host side cannot be considered trusted, so this rejects HTTP-only connections.
 fn tls_builder() -> HttpsConnectorBuilder<hyper_rustls::builderstates::WantsProtocols1> {
-	// Naming the provider avoids rustls' "could not determine the process-level `CryptoProvider`"
-	// panic, which fires whenever something else in the tree also enables `aws_lc_rs`.
 	let config = rustls::ClientConfig::builder_with_provider(Arc::new(
 		rustls::crypto::ring::default_provider(),
 	))
@@ -58,8 +58,6 @@ fn tls_builder() -> HttpsConnectorBuilder<hyper_rustls::builderstates::WantsProt
 	.with_webpki_roots()
 	.with_no_client_auth();
 
-	// `https_only` rather than `https_or_http`: the host-side proxy is untrusted, so an `http://`
-	// URI must fail rather than hand it the request in the clear.
 	HttpsConnectorBuilder::new()
 		.with_tls_config(config)
 		.https_only()
@@ -146,7 +144,7 @@ impl Connection for VSockClient {
 	}
 }
 
-/// Bounds the time a connector may spend establishing a connection.\
+/// Limits the time establishing a connection.
 #[derive(Debug, Clone)]
 pub struct ConnectTimeout<C> {
 	inner: C,
