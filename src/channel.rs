@@ -25,20 +25,16 @@
 //! substitution the RFC directs rather than a deviation from it.
 
 use aes_gcm::{
-	Aes256Gcm, Key, KeyInit,
 	aead::{Aead, Nonce},
+	Aes256Gcm, Key, KeyInit,
 };
 use channel_sha2::Sha256;
 use hkdf::Hkdf;
 use hpke::{
-	Deserializable, Kem as KemTrait, OpModeR, OpModeS, Serializable, aead::AeadCtxS,
-	rand_core::CryptoRng, setup_receiver, setup_sender_with_rng,
+	aead::AeadCtxS, rand_core::CryptoRng, setup_receiver, setup_sender_with_rng, Deserializable,
+	Kem as KemTrait, OpModeR, OpModeS, Serializable,
 };
 use zeroize::Zeroizing;
-
-/// Re-exported so callers bind against the same `rand_core` generation this crate does.
-pub use hpke::rand_core;
-pub use hpke::rand_core::UnwrapErr;
 
 /// The channel ciphersuite, pinned at the type level so it cannot drift silently:
 /// DHKEM(X25519, HKDF-SHA256) — RFC 9180 §7.1.
@@ -513,8 +509,9 @@ mod tests {
 	use hpke::rand_core::UnwrapErr;
 
 	use super::{
-		AEAD_TAG_LEN, ChannelDomain, ChannelError, ENCAPSULATED_KEY_LEN, EXPORTER_LABEL_SUFFIX,
-		RESPONSE_NONCE_LEN, Requester, Responder, ResponseOpener, SealedRequest, SealedResponse,
+		ChannelDomain, ChannelError, Requester, Responder, ResponseOpener, SealedRequest,
+		SealedResponse, AEAD_TAG_LEN, ENCAPSULATED_KEY_LEN, EXPORTER_LABEL_SUFFIX,
+		RESPONSE_NONCE_LEN,
 	};
 
 	const TEST_DOMAIN: ChannelDomain = ChannelDomain::new("pontifex/test", 1);

@@ -28,11 +28,7 @@ nsm-types = [
 ]
 http = ["_vsock-https"]
 channel = [
-    "dep:hkdf",
-    "dep:hpke",
-    "dep:aes-gcm",
-    "dep:zeroize",
-    "dep:channel-sha2",
+    "dep:quantum-box",
 ]
 kms = [
     "_vsock-https",
@@ -55,6 +51,7 @@ _vsock-https = [
 all-features = true
 
 [dependencies]
+const-fnv1a-hash = "1.1.0"
 serde = "1"
 tracing = "0.1"
 rmp-serde = "1"
@@ -94,27 +91,11 @@ rustls = { version = "0.23", optional = true, default-features = false, features
     "std",
     "tls12",
 ] }
-const-fnv1a-hash = "1.1.0"
-
-# `channel` feature. HKDF 0.13 is what `hpke` already resolves for its own HKDF-SHA256.
-hkdf = { version = "0.13", optional = true }
-# rust-hpke: the only Rust HPKE implementation with an independent security review. Default
-# features are off so `mlkem` does not drag ml-kem, x-wing and sha3 into an enclave image;
-# `x25519` transitively enables `hkdfsha2`, which the DHKEM(X25519, HKDF-SHA256) suite needs.
-# Revisit `mlkem`/`x-wing` if the KEM ever needs to be post-quantum hybrid.
-hpke = { version = "0.14", default-features = false, features = ["alloc", "x25519", "aes"], optional = true }
-aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"], optional = true }
-zeroize = { version = "1", default-features = false, features = ["alloc"], optional = true }
-# Renamed, not shared with the `sha2` above: the channel needs the 0.11 generation `hpke` and
-# `hkdf` resolve, while `nsm-types` is on 0.10. Both features together link two SHA-256s.
-channel-sha2 = { package = "sha2", version = "0.11", default-features = false, optional = true }
+quantum-box = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
-<<<<<<< HEAD
 hex-literal = "1.1"
 getrandom = { version = "0.4", features = ["sys_rng"] }
-=======
 tokio = { version = "1", features = ["macros", "rt", "test-util", "time"] }
 aws-smithy-runtime-api = { version = "1.9", features = ["client", "http-1x", "test-util"] }
->>>>>>> main
