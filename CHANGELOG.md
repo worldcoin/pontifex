@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3](https://github.com/worldcoin/pontifex/compare/1.1.2...1.1.3) - 2026-09-02
+
+### Fixed
+
+- improve crate docs & remove connector cache limit ([#36](https://github.com/worldcoin/pontifex/pull/36))
+- drop unmaintained rustls-pemfile from the dependency tree ([#32](https://github.com/worldcoin/pontifex/pull/32))
+
+### Other
+
+- release workflow ([#37](https://github.com/worldcoin/pontifex/pull/37))
+- add kilianglas to CODEOWNERS ([#33](https://github.com/worldcoin/pontifex/pull/33))
+- Update .github/workflows/relyance-sci.yml
+- Update .github/workflows/relyance-sci.yml
+
 ## [1.1.2] - 2025-11-03
 
 ### What's Changed
