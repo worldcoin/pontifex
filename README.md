@@ -74,6 +74,10 @@ let response: HealthStatus = send(connection, &HealthCheck).await?;
 
 See the [`example`](example) directory for a complete working example.
 
+## Releases
+
+Releases are automated with [release-plz](https://release-plz.dev)
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
