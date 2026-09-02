@@ -99,7 +99,6 @@ pub mod channel;
 #[cfg(feature = "channel")]
 pub use channel::{
 	ChannelDomain, ChannelError, Requester, Responder, ResponseOpener, ResponseSealer,
-	SealedRequest, SealedResponse,
 };
 
 mod utils;

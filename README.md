@@ -73,28 +73,29 @@ let response: HealthStatus = send(connection, &HealthCheck).await?;
 ### Sealed Channel
 
 The `channel` feature adds an end-to-end encrypted channel to a specific enclave boot, so the
-untrusted parent instance forwarding the bytes never sees the plaintext. Requests use HPKE
-(RFC 9180) `mode_base`; responses use the encapsulation construction of RFC 9458 §4.4, which
-replies to one request without a second key exchange.
+untrusted parent instance forwarding the bytes never sees the plaintext. Every message is a
+[`quantum-box`](https://docs.rs/quantum-box) sealed box over the X-Wing hybrid KEM.
 
 The enclave generates a keypair per boot and attests its public key; the client verifies the
-attestation and seals to the key it carried. Both sides name the same `ChannelDomain`.
+attestation and seals to the key it carried. Each request carries a fresh reply key the enclave
+seals the response to, so only that requester can open it. Both sides name the same
+`ChannelDomain`.
 
 ```rust,ignore
-use pontifex::channel::{ChannelDomain, Requester, Responder, UnwrapErr};
+use pontifex::channel::{ChannelDomain, Requester, Responder};
 
 const DOMAIN: ChannelDomain = ChannelDomain::new("my-protocol/match", 1);
 
 // Enclave, once per boot. Attest `responder.public_key()`.
-let responder = Responder::generate(DOMAIN, &mut UnwrapErr(getrandom::SysRng));
+let responder = Responder::generate(DOMAIN)?;
 
 // Client, per request, against the key the verified attestation carried.
-let requester = Requester::from_attestation(DOMAIN, attested_public_key)?;
-let (sealed_request, opener) = requester.seal(b"inputs", &mut UnwrapErr(getrandom::SysRng))?;
+let requester = Requester::new(DOMAIN, attested_public_key)?;
+let (sealed_request, opener) = requester.seal(b"inputs")?;
 
 // Enclave: open the request, seal the one reply it belongs to.
 let (plaintext, sealer) = responder.open(&sealed_request)?;
-let sealed_response = sealer.seal(b"result", &mut UnwrapErr(getrandom::SysRng))?;
+let sealed_response = sealer.seal(b"result")?;
 
 // Client: only this requester can open that response.
 let result = opener.open(&sealed_response)?;

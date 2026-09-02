@@ -1,18 +1,14 @@
 {
   "words": [
-    "aead",
-    "bhttp",
     "cbor",
     "Cose",
     "ciphertext",
-    "encapped",
-    "hkdf",
+    "csprng",
     "hpke",
-    "getrandom",
     "rustls",
     "thiserror",
+    "unseal",
     "vsock",
-    "webpki",
-    "zeroize"
+    "webpki"
   ]
 }
