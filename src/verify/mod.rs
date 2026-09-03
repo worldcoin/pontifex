@@ -1,8 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use coset::CoseSign1;
-use crypto_box::{PublicKey, aead::OsRng};
+use coset::{Algorithm, CoseSign1, iana};
 use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use webpki::{EndEntityCert, TrustAnchor};
 use x509_cert::{Certificate, der::Decode};
@@ -18,12 +17,9 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-pub use types::{
-	EnclaveAttestationError, EnclaveAttestationResult, PcrMeasurement, VerifiedAttestation,
-	VerifiedAttestationWithCiphertext,
-};
+pub use types::{EnclaveAttestationError, PcrMeasurement, VerifiedAttestation};
 
-use constants::{AWS_NITRO_ROOT_CERT, MAX_ATTESTATION_AGE_MILLISECONDS, get_expected_pcr_length};
+use constants::{AWS_NITRO_ROOT_CERT, DEFAULT_MAX_ATTESTATION_AGE, get_expected_pcr_length};
 
 /// Verifies AWS Nitro Enclave attestation documents
 ///
@@ -41,48 +37,41 @@ pub struct EnclaveAttestationVerifier {
 	/// This allows for supporting multiple enclave software versions.
 	allowed_pcr_configs: Vec<Vec<PcrMeasurement>>,
 	root_certificate: Vec<u8>,
-	max_age_millis: u64,
+	max_age: Duration,
 	#[cfg(test)]
 	skip_certificate_time_check: bool,
 }
 
 impl EnclaveAttestationVerifier {
-	/// Creates a new `EnclaveAttestationVerifier` trusting the AWS Nitro root certificate
-	/// and the default maximum attestation age.
+	/// Creates a new `EnclaveAttestationVerifier` trusting the AWS Nitro root certificate and
+	/// [`DEFAULT_MAX_ATTESTATION_AGE`].
 	///
 	/// # Arguments
 	/// * `allowed_pcr_configs` - Allowed PCR configurations. Verification succeeds if *any*
 	///   configuration matches, which allows supporting multiple enclave software versions.
 	#[must_use]
 	pub fn new(allowed_pcr_configs: Vec<Vec<PcrMeasurement>>) -> Self {
-		Self::new_with_config(
-			allowed_pcr_configs,
-			AWS_NITRO_ROOT_CERT.to_vec(),
-			MAX_ATTESTATION_AGE_MILLISECONDS,
-		)
-	}
-
-	/// Creates a new `EnclaveAttestationVerifier` with a custom root certificate and maximum
-	/// attestation age.
-	///
-	/// # Arguments
-	/// * `allowed_pcr_configs` - Allowed PCR configurations. Verification succeeds if *any*
-	///   configuration matches.
-	/// * `root_certificate` - DER-encoded root certificate the attestation chain must chain up to.
-	/// * `max_age_millis` - Maximum age of an attestation document, in milliseconds.
-	#[must_use]
-	pub const fn new_with_config(
-		allowed_pcr_configs: Vec<Vec<PcrMeasurement>>,
-		root_certificate: Vec<u8>,
-		max_age_millis: u64,
-	) -> Self {
 		Self {
 			allowed_pcr_configs,
-			root_certificate,
-			max_age_millis,
+			root_certificate: AWS_NITRO_ROOT_CERT.to_vec(),
+			max_age: DEFAULT_MAX_ATTESTATION_AGE,
 			#[cfg(test)]
 			skip_certificate_time_check: false,
 		}
+	}
+
+	/// Sets how old an attestation document may be before it is rejected as stale.
+	#[must_use]
+	pub const fn with_max_age(mut self, max_age: Duration) -> Self {
+		self.max_age = max_age;
+		self
+	}
+
+	/// Sets the DER-encoded root certificate the attestation chain must chain up to.
+	#[must_use]
+	pub fn with_root_certificate(mut self, root_certificate: Vec<u8>) -> Self {
+		self.root_certificate = root_certificate;
+		self
 	}
 
 	/// Verifies a base64-encoded attestation document
@@ -100,7 +89,7 @@ impl EnclaveAttestationVerifier {
 	pub fn verify_attestation_document_base64(
 		&self,
 		attestation_doc_base64: &str,
-	) -> EnclaveAttestationResult<VerifiedAttestation> {
+	) -> Result<VerifiedAttestation, EnclaveAttestationError> {
 		let attestation_doc_bytes = STANDARD.decode(attestation_doc_base64).map_err(|e| {
 			EnclaveAttestationError::AttestationDocumentParseError(format!(
 				"Failed to decode base64 attestation document: {e}"
@@ -108,55 +97,6 @@ impl EnclaveAttestationVerifier {
 		})?;
 
 		self.verify_attestation_document(&attestation_doc_bytes)
-	}
-
-	/// Verifies a base64-encoded attestation document and encrypts the given plaintext
-	///
-	/// This is a convenience method that handles base64 decoding, verifying the attestation document,
-	/// and encrypting the given plaintext using the enclave's public key using `crypto_box` sealed box.
-	///
-	/// Learn about seal box [here](https://libsodium.gitbook.io/doc/public-key_cryptography/sealed_boxes)
-	///
-	/// # Arguments
-	/// * `attestation_doc_base64` - The base64-encoded attestation document
-	/// * `plaintext` - The plaintext to encrypt
-	///
-	/// # Returns
-	/// A verified attestation containing the enclave's public key and the encrypted plaintext.
-	///
-	/// # Errors
-	/// Returns an error if the base64 decoding fails or the attestation document verification fails
-	pub fn verify_attestation_document_and_encrypt(
-		&self,
-		attestation_doc_base64: &str,
-		plaintext: &[u8],
-	) -> EnclaveAttestationResult<VerifiedAttestationWithCiphertext> {
-		let verified_attestation =
-			self.verify_attestation_document_base64(attestation_doc_base64)?;
-
-		let public_key = {
-			let pk_bytes = STANDARD
-				.decode(verified_attestation.enclave_public_key.clone())
-				.map_err(|e| {
-					EnclaveAttestationError::InvalidEnclavePublicKey(format!(
-						"Failed to decode enclave public key: {e}"
-					))
-				})?;
-			PublicKey::from_slice(&pk_bytes).map_err(|e| {
-				EnclaveAttestationError::InvalidEnclavePublicKey(format!(
-					"Failed to parse enclave public key: {e}"
-				))
-			})?
-		};
-
-		let ciphertext = public_key
-			.seal(&mut OsRng, plaintext)
-			.map_err(|_| EnclaveAttestationError::EncryptionError)?;
-
-		Ok(VerifiedAttestationWithCiphertext {
-			verified_attestation,
-			ciphertext,
-		})
 	}
 
 	/// Verifies the attestation document from the enclave.
@@ -175,7 +115,7 @@ impl EnclaveAttestationVerifier {
 	pub fn verify_attestation_document(
 		&self,
 		attestation_doc_bytes: &[u8],
-	) -> EnclaveAttestationResult<VerifiedAttestation> {
+	) -> Result<VerifiedAttestation, EnclaveAttestationError> {
 		// 1. Syntactical validation
 		let (cose_sign1, attestation) = Self::parse_attestation_doc(attestation_doc_bytes)?;
 
@@ -189,7 +129,7 @@ impl EnclaveAttestationVerifier {
 		let public_key = Self::extract_public_key(&attestation)?;
 
 		Ok(VerifiedAttestation::new(
-			STANDARD.encode(public_key),
+			public_key,
 			attestation.timestamp,
 			attestation.module_id,
 		))
@@ -197,7 +137,7 @@ impl EnclaveAttestationVerifier {
 
 	fn parse_attestation_doc(
 		bytes: &[u8],
-	) -> EnclaveAttestationResult<(CoseSign1, AttestationDoc)> {
+	) -> Result<(CoseSign1, AttestationDoc), EnclaveAttestationError> {
 		// Validate before loading into buffer
 		if bytes.is_empty() {
 			return Err(EnclaveAttestationError::AttestationDocumentParseError(
@@ -221,7 +161,7 @@ impl EnclaveAttestationVerifier {
 	fn verify_certificate_chain(
 		&self,
 		attestation: &AttestationDoc,
-	) -> EnclaveAttestationResult<Certificate> {
+	) -> Result<Certificate, EnclaveAttestationError> {
 		let root_cert_der = self.root_certificate.as_slice();
 
 		// Create trust anchor from root certificate
@@ -298,7 +238,7 @@ impl EnclaveAttestationVerifier {
 	fn verify_cose_signature(
 		cose_sign1: &CoseSign1,
 		leaf_cert: &Certificate,
-	) -> EnclaveAttestationResult<()> {
+	) -> Result<(), EnclaveAttestationError> {
 		// Extract public key from certificate
 		let spki = &leaf_cert.tbs_certificate.subject_public_key_info;
 		let public_key_bytes = spki.subject_public_key.as_bytes().ok_or_else(|| {
@@ -307,20 +247,26 @@ impl EnclaveAttestationVerifier {
 			)
 		})?;
 
-		// Parse as P-384 public key
 		let verifying_key = VerifyingKey::from_sec1_bytes(public_key_bytes).map_err(|e| {
 			EnclaveAttestationError::AttestationSignatureInvalid(format!(
 				"Failed to parse P-384 public key: {e}"
 			))
 		})?;
 
-		// Nitro uses P-384 signatures which should be exactly 96 bytes
-		if cose_sign1.signature.len() != 96 {
+		// The spec fixes the algorithm at ES384; accepting a document that declares anything else
+		// would let the header disagree with the P-384 check performed below.
+		let alg = cose_sign1.protected.header.alg.as_ref();
+		if alg != Some(&Algorithm::Assigned(iana::Algorithm::ES384)) {
 			return Err(EnclaveAttestationError::AttestationSignatureInvalid(
-				format!(
-					"Invalid signature length: expected 96 bytes, got {}",
-					cose_sign1.signature.len()
-				),
+				format!("Expected ES384 in the protected header, got {alg:?}"),
+			));
+		}
+
+		// coset substitutes an empty payload when there is none, which would verify a signature
+		// over a document this function never saw.
+		if cose_sign1.payload.is_none() {
+			return Err(EnclaveAttestationError::AttestationSignatureInvalid(
+				"Missing payload in COSE Sign1".to_string(),
 			));
 		}
 
@@ -344,7 +290,10 @@ impl EnclaveAttestationVerifier {
 		})
 	}
 
-	fn validate_pcr_values(&self, attestation: &AttestationDoc) -> EnclaveAttestationResult<()> {
+	fn validate_pcr_values(
+		&self,
+		attestation: &AttestationDoc,
+	) -> Result<(), EnclaveAttestationError> {
 		if attestation.pcrs.is_empty() {
 			return Err(EnclaveAttestationError::CodeUntrusted {
 				pcr_index: 0,
@@ -399,7 +348,7 @@ impl EnclaveAttestationVerifier {
 	fn check_attestation_freshness(
 		&self,
 		attestation: &AttestationDoc,
-	) -> EnclaveAttestationResult<()> {
+	) -> Result<(), EnclaveAttestationError> {
 		let now = u64::try_from(
 			SystemTime::now()
 				.duration_since(UNIX_EPOCH)
@@ -423,17 +372,20 @@ impl EnclaveAttestationVerifier {
 			))
 		})?;
 
-		if age > self.max_age_millis {
+		let max_age_millis = u64::try_from(self.max_age.as_millis()).unwrap_or(u64::MAX);
+		if age > max_age_millis {
 			return Err(EnclaveAttestationError::AttestationStale {
 				age_millis: age,
-				max_age: self.max_age_millis,
+				max_age: max_age_millis,
 			});
 		}
 
 		Ok(())
 	}
 
-	fn extract_public_key(attestation: &AttestationDoc) -> EnclaveAttestationResult<Vec<u8>> {
+	fn extract_public_key(
+		attestation: &AttestationDoc,
+	) -> Result<Vec<u8>, EnclaveAttestationError> {
 		attestation.public_key.clone().map_or_else(
 			|| {
 				Err(EnclaveAttestationError::InvalidEnclavePublicKey(
@@ -447,7 +399,7 @@ impl EnclaveAttestationVerifier {
 	fn get_pcr_value(
 		attestation_doc: &AttestationDoc,
 		pcr_index: u32,
-	) -> EnclaveAttestationResult<Vec<u8>> {
+	) -> Result<Vec<u8>, EnclaveAttestationError> {
 		attestation_doc.pcrs.get(&(pcr_index as usize)).map_or_else(
 			|| {
 				Err(EnclaveAttestationError::CodeUntrusted {
@@ -462,20 +414,12 @@ impl EnclaveAttestationVerifier {
 
 #[cfg(test)]
 impl EnclaveAttestationVerifier {
-	/// Creates a new `EnclaveAttestationVerifier` with custom PCR configurations, used for testing.
+	/// Validates certificates against the attestation's own timestamp rather than the wall clock,
+	/// so the expired fixtures stay usable.
 	#[must_use]
-	pub const fn new_with_config_and_time_skip(
-		allowed_pcr_configs: Vec<Vec<PcrMeasurement>>,
-		root_certificate: Vec<u8>,
-		max_age_millis: u64,
-		skip_certificate_time_check: bool,
-	) -> Self {
-		Self {
-			allowed_pcr_configs,
-			root_certificate,
-			max_age_millis,
-			skip_certificate_time_check,
-		}
+	pub const fn with_skipped_certificate_time_check(mut self) -> Self {
+		self.skip_certificate_time_check = true;
+		self
 	}
 
 	/// Adds a custom PCR configuration, used for testing.

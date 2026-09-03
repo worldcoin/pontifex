@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Represents errors that can occur during enclave attestation verification
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum EnclaveAttestationError {
 	/// Failed to parse attestation document
 	#[error("Failed to parse attestation document: {0}")]
@@ -45,20 +45,13 @@ pub enum EnclaveAttestationError {
 	/// Invalid enclave public key
 	#[error("Invalid enclave public key: {0}")]
 	InvalidEnclavePublicKey(String),
-
-	/// Failed to encrypt data
-	#[error("Failed to encrypt data")]
-	EncryptionError,
 }
-
-/// Result type for enclave attestation operations
-pub type EnclaveAttestationResult<T, E = EnclaveAttestationError> = Result<T, E>;
 
 /// Verified attestation data from the enclave.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifiedAttestation {
-	/// The base64 encoded public key of the enclave
-	pub enclave_public_key: String,
+	/// The public key the enclave attested, as raw bytes
+	pub enclave_public_key: Vec<u8>,
 
 	/// The timestamp of the attestation
 	pub timestamp: u64,
@@ -70,26 +63,17 @@ impl VerifiedAttestation {
 	/// Creates a new `VerifiedAttestation`
 	///
 	/// # Arguments
-	/// * `enclave_public_key` - The base64 encoded public key of the enclave
+	/// * `enclave_public_key` - The public key the enclave attested, as raw bytes
 	/// * `timestamp` - The timestamp of the attestation
 	/// * `module_id` - The module ID of the enclave
 	#[must_use]
-	pub const fn new(enclave_public_key: String, timestamp: u64, module_id: String) -> Self {
+	pub const fn new(enclave_public_key: Vec<u8>, timestamp: u64, module_id: String) -> Self {
 		Self {
 			enclave_public_key,
 			timestamp,
 			module_id,
 		}
 	}
-}
-
-/// Verified attestation with ciphertext
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifiedAttestationWithCiphertext {
-	/// The verified attestation
-	pub verified_attestation: VerifiedAttestation,
-	/// The ciphertext bytes
-	pub ciphertext: Vec<u8>,
 }
 
 /// Represents a PCR measurement with its index and value

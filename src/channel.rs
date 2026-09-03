@@ -12,12 +12,16 @@
 //! 2. The response from the enclave is **NOT** attested. Quantum boxes are anonymous, anyone
 //!   could have encrypted a response to it with its public key. If the use case requires trusting
 //!   the enclave response, add an additional attestation or signature mechanism.
-//! 3. This module currently does **NOT** verify an attestation on the enclave's public key.
+//! 3. Build the consumer with [`ChannelConsumer::from_attestation`] so the enclave's public key
+//!   comes from a verified attestation. [`ChannelConsumer::from_unverified_public_key`] skips that
+//!   check and trusts whatever key it is handed.
 //! 4. This system does not offer direct replay protection for requests (e.g. a malicious host could inject
 //!   the same ciphertext multiple times). Add a separate mechanism if your trust assumptions require this.
 
 use quantum_box::{PublicKey, SecretKey};
 use zeroize::ZeroizeOnDrop;
+
+use crate::verify::{EnclaveAttestationError, EnclaveAttestationVerifier, VerifiedAttestation};
 
 pub use quantum_box::Error as SealedBoxError;
 pub use zeroize::Zeroizing;
@@ -41,6 +45,9 @@ pub enum ChannelError {
 	/// A key, a seal, or an unseal failed.
 	#[error("ChannelError::SealedBox: {0}")]
 	SealedBox(#[from] SealedBoxError),
+	/// The attestation carrying the enclave's public key did not verify.
+	#[error("ChannelError::Attestation: {0}")]
+	Attestation(#[from] EnclaveAttestationError),
 }
 
 /// The protocol name bound into every seal on a channel.
@@ -179,15 +186,41 @@ impl std::fmt::Debug for ChannelConsumer {
 }
 
 impl ChannelConsumer {
-	/// Builds a consumer for the public key a verified attestation carried.
+	/// Verifies `attestation_doc` and builds a consumer for the public key it carries.
 	///
-	/// This does **not** verify that attestation. Verify it first — otherwise the key may be the
-	/// untrusted parent's own, and it will read every request.
+	/// This is the constructor to reach for: the key is only trusted because the attestation
+	/// proves the enclave generated it.
+	///
+	/// # Errors
+	///
+	/// Fails if the attestation does not verify, or if the key it carries is not a valid X-Wing
+	/// encapsulation key.
+	pub fn from_attestation(
+		domain: ChannelDomain,
+		verifier: &EnclaveAttestationVerifier,
+		attestation_doc: &[u8],
+	) -> Result<(Self, VerifiedAttestation), ChannelError> {
+		let attestation = verifier.verify_attestation_document(attestation_doc)?;
+		let consumer = Self {
+			domain,
+			enclave_public_key: PublicKey::from_bytes(&attestation.enclave_public_key)?,
+		};
+
+		Ok((consumer, attestation))
+	}
+
+	/// Builds a consumer for a public key that has **not** been checked against an attestation.
+	///
+	/// The key may be the untrusted parent's own, in which case it reads every request. Prefer
+	/// [`Self::from_attestation`].
 	///
 	/// # Errors
 	///
 	/// Fails if `enclave_public_key` is not a valid X-Wing encapsulation key.
-	pub fn new(domain: ChannelDomain, enclave_public_key: &[u8]) -> Result<Self, ChannelError> {
+	pub fn from_unverified_public_key(
+		domain: ChannelDomain,
+		enclave_public_key: &[u8],
+	) -> Result<Self, ChannelError> {
 		Ok(Self {
 			domain,
 			enclave_public_key: PublicKey::from_bytes(enclave_public_key)?,
@@ -269,6 +302,8 @@ mod tests {
 	};
 	use quantum_box::{PublicKey, SecretKey};
 
+	use crate::test_support::{real_attestation_bytes, real_attestation_verifier};
+
 	const TEST_DOMAIN: ChannelDomain = ChannelDomain::new("pontifex/test");
 
 	fn enclave() -> ChannelEnclave {
@@ -276,7 +311,8 @@ mod tests {
 	}
 
 	fn consumer_for(enclave: &ChannelEnclave, domain: ChannelDomain) -> ChannelConsumer {
-		ChannelConsumer::new(domain, &enclave.public_key()).expect("attested key parses")
+		ChannelConsumer::from_unverified_public_key(domain, &enclave.public_key())
+			.expect("attested key parses")
 	}
 
 	fn seal(consumer: &ChannelConsumer, plaintext: &[u8]) -> (Vec<u8>, ResponseOpener) {
@@ -372,7 +408,7 @@ mod tests {
 	#[test]
 	fn rejects_an_unparseable_key() {
 		assert_eq!(
-			ChannelConsumer::new(TEST_DOMAIN, &[0u8; 32]).err(),
+			ChannelConsumer::from_unverified_public_key(TEST_DOMAIN, &[0u8; 32]).err(),
 			Some(ChannelError::SealedBox(SealedBoxError::KeyFormat))
 		);
 	}
@@ -541,5 +577,31 @@ mod tests {
 			r#"ChannelConsumer { domain: ChannelDomain { name: "pontifex/test" }, .. }"#
 		);
 		assert_eq!(format!("{sealer:?}"), "ResponseSealer { .. }");
+	}
+
+	#[test]
+	fn from_attestation_rejects_a_tampered_document() {
+		let mut doc = real_attestation_bytes();
+		*doc.last_mut().expect("non-empty") ^= 0x01;
+
+		let err =
+			ChannelConsumer::from_attestation(TEST_DOMAIN, &real_attestation_verifier(), &doc)
+				.expect_err("a tampered attestation must not yield a consumer");
+
+		assert!(matches!(err, ChannelError::Attestation(_)), "got {err:?}");
+	}
+
+	/// The fixture attests a 32-byte key rather than an X-Wing one, so reaching the key-format
+	/// error is what proves the attestation itself verified and the key was unpacked from it.
+	#[test]
+	fn from_attestation_unpacks_the_attested_key() {
+		let err = ChannelConsumer::from_attestation(
+			TEST_DOMAIN,
+			&real_attestation_verifier(),
+			&real_attestation_bytes(),
+		)
+		.expect_err("the fixture key is not a valid X-Wing key");
+
+		assert_eq!(err, ChannelError::SealedBox(SealedBoxError::KeyFormat));
 	}
 }

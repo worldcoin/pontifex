@@ -1,5 +1,7 @@
 //! Constants used when verifying AWS Nitro Enclave attestation documents.
 
+use std::time::Duration;
+
 use crate::nsm::Digest;
 
 /// AWS Nitro Root Certificate (G1), in DER form.
@@ -8,8 +10,10 @@ use crate::nsm::Digest;
 /// Stored at `src/verify/aws_nitro_root_g1.der`
 pub const AWS_NITRO_ROOT_CERT: &[u8] = include_bytes!("aws_nitro_root_g1.der");
 
-/// Maximum age for attestation documents (in milliseconds)
-pub const MAX_ATTESTATION_AGE_MILLISECONDS: u64 = 3 * 60 * 60 * 1000; // 3 hours
+/// Default maximum age for an attestation document.
+///
+/// Override with [`EnclaveAttestationVerifier::with_max_age`](super::EnclaveAttestationVerifier::with_max_age).
+pub const DEFAULT_MAX_ATTESTATION_AGE: Duration = Duration::from_hours(3);
 
 /// Get the expected PCR length depending on the hashing algorithm used
 /// As of right now, only SHA-384 is used

@@ -39,6 +39,8 @@ pub enum AttestationError {
 /// This only decodes the document — it does **not** verify the COSE signature, the certificate
 /// chain, the PCR values or the timestamp. Use the `verify` module for that.
 ///
+/// Only untagged `COSE_Sign1` is accepted, which is what the NSM emits; CBOR tag 18 is rejected.
+///
 /// # Errors
 /// Returns an error if the document cannot be decoded.
 pub fn parse_raw_attestation_doc(document: &[u8]) -> Result<AttestationDoc, AttestationError> {
@@ -61,8 +63,17 @@ pub(crate) fn parse_cose_attestation_doc(
 		.as_ref()
 		.ok_or_else(|| AttestationError::Cose("missing payload in COSE Sign1".to_string()))?;
 
-	let attestation_doc = ciborium::from_reader::<AttestationDoc, _>(payload.as_slice())
+	// `from_reader` stops at the end of the first CBOR item; anything after it would be accepted
+	// silently, leaving two decoders free to disagree on what the document says.
+	let mut remaining = payload.as_slice();
+	let attestation_doc = ciborium::from_reader::<AttestationDoc, _>(&mut remaining)
 		.map_err(|e| AttestationError::Encoding(e.to_string()))?;
+	if !remaining.is_empty() {
+		return Err(AttestationError::Encoding(format!(
+			"{} trailing bytes after the attestation document",
+			remaining.len()
+		)));
+	}
 
 	Ok((cose_document, attestation_doc))
 }
@@ -142,15 +153,7 @@ impl SecureModule {
 		public_key: Option<impl Into<Vec<u8>>>,
 	) -> Result<AttestationDoc, AttestationError> {
 		let document = self.raw_attest(user_data, nonce, public_key)?;
-		Self::parse_raw_attestation_doc(&document)
-	}
-
-	/// Parse a raw attestation document into an `AttestationDoc`.
-	///
-	/// # Errors
-	/// Returns an error if the document cannot be decoded.
-	pub fn parse_raw_attestation_doc(document: &[u8]) -> Result<AttestationDoc, AttestationError> {
-		crate::nsm::parse_raw_attestation_doc(document)
+		parse_raw_attestation_doc(&document)
 	}
 
 	/// Attempt to get the global NSM instance.
@@ -194,22 +197,53 @@ impl Drop for SecureModule {
 	}
 }
 
-#[cfg(all(test, feature = "nsm"))]
+#[cfg(test)]
 mod tests {
+	use serde_bytes::ByteBuf;
+
 	use super::*;
 
-	/// Takes a COSE-signed attestation document and asserts that it can be properly parsed into an `AttestationDoc`.
-	///
+	const MOCK_DOC: &[u8] = include_bytes!("../tests/mock-attestation-doc.cose");
+
 	/// The `mock-attestation-doc` is generated from a test Nitro enclave with some values sanitized.
 	#[test]
 	fn test_parse_raw_attestation_doc() {
-		let document = include_bytes!("../tests/mock-attestation-doc.cose");
-		let document: AttestationDoc = SecureModule::parse_raw_attestation_doc(document).unwrap();
+		let document = parse_raw_attestation_doc(MOCK_DOC).unwrap();
 
 		assert_eq!(document.module_id, "test");
 		assert_eq!(document.timestamp, 1_748_469_829_761);
 		assert_eq!(document.certificate, ByteBuf::from(vec![3, 4]));
 		assert_eq!(document.nonce, Some(ByteBuf::from(b"some nonce")));
 		assert_eq!(document.user_data, Some(ByteBuf::from(b"hello, world!")));
+	}
+
+	#[test]
+	fn trailing_bytes_after_the_payload_are_rejected() {
+		let (envelope, _) = parse_cose_attestation_doc(MOCK_DOC).unwrap();
+		let mut payload = envelope.payload.clone().unwrap();
+		payload.push(0xf6);
+
+		let tampered = CoseSign1 {
+			payload: Some(payload),
+			..envelope
+		}
+		.to_vec()
+		.unwrap();
+
+		assert!(matches!(
+			parse_raw_attestation_doc(&tampered),
+			Err(AttestationError::Encoding(_))
+		));
+	}
+
+	#[test]
+	fn a_tagged_cose_sign1_is_rejected() {
+		let mut tagged = vec![0xd2];
+		tagged.extend_from_slice(MOCK_DOC);
+
+		assert!(matches!(
+			parse_raw_attestation_doc(&tagged),
+			Err(AttestationError::Cose(_))
+		));
 	}
 }

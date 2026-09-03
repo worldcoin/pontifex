@@ -87,8 +87,8 @@ const DOMAIN: ChannelDomain = ChannelDomain::new("my-protocol/match_v1");
 // Enclave (usually once per boot): Attest `enclave.public_key()`, then hand those bytes out.
 let enclave = ChannelEnclave::generate(DOMAIN)?;
 
-// End consumer: uses an *attested* public key. NOTE: attestation is currently not verified here.
-let consumer = ChannelConsumer::new(DOMAIN, &attested_public_key)?;
+// End consumer: verifies the attestation and takes the public key from it.
+let (consumer, attestation) = ChannelConsumer::from_attestation(DOMAIN, &verifier, &attestation_doc)?;
 let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;
 
 // Enclave: open the request, seal the one reply it belongs to.
@@ -101,8 +101,9 @@ let result = opener.open_from_enclave(&sealed_response)?;
 
 ### Attestation Verification
 
-Outside the enclave, the `verify` feature checks an attestation document produced by the NSM:
-COSE Sign1 signature, certificate chain up to the AWS Nitro root, PCR values, and freshness.
+Outside the enclave, the `attestation` feature checks an attestation document produced by the NSM:
+COSE Sign1 signature, certificate chain up to the AWS Nitro root, PCR values, and freshness. The
+`channel` feature turns it on, so a sealed channel keys off a verified attestation.
 
 ```rust,ignore
 use pontifex::verify::{EnclaveAttestationVerifier, PcrMeasurement};
@@ -115,8 +116,9 @@ let verifier = EnclaveAttestationVerifier::new(vec![vec![
     PcrMeasurement::new(2, pcr2),
 ]]);
 
+// Defaults to a three-hour freshness window; override with `.with_max_age(..)`.
 let attestation = verifier.verify_attestation_document_base64(&attestation_doc_base64)?;
-println!("enclave public key: {}", attestation.enclave_public_key);
+println!("enclave module: {}", attestation.module_id);
 ```
 
 ## Releases
