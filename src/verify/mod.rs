@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use coset::{Algorithm, CoseSign1, iana};
+use coset::{Algorithm, CoseSign1, Header, iana};
 use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use webpki::{EndEntityCert, TrustAnchor};
 use x509_cert::{Certificate, der::Decode};
@@ -270,6 +270,14 @@ impl EnclaveAttestationVerifier {
 			));
 		}
 
+		// Nitro leaves the unprotected header empty. Anything in it is unsigned, so accepting it
+		// would let a malleable copy of a document carry contradictory headers.
+		if cose_sign1.unprotected != Header::default() {
+			return Err(EnclaveAttestationError::AttestationSignatureInvalid(
+				"Unprotected header must be empty".to_string(),
+			));
+		}
+
 		// `verify_signature` reconstructs the COSE Sign1 `Sig_structure`
 		// (`["Signature1", protected, external_aad, payload]`) and hands it to the closure
 		// alongside the signature. Nitro attestations carry no external AAD.
@@ -308,6 +316,12 @@ impl EnclaveAttestationVerifier {
 		// Try to find at least one allowed PCR configuration that matches
 		// This allows supporting multiple enclave versions simultaneously
 		for allowed_pcr_measurements in &self.allowed_pcr_configs {
+			// An empty configuration compares nothing, so it would match every attestation and
+			// silently disable PCR pinning. Never let one satisfy the policy.
+			if allowed_pcr_measurements.is_empty() {
+				continue;
+			}
+
 			let mut all_match = true;
 
 			for pcr_measurement in allowed_pcr_measurements {

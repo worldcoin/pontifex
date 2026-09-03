@@ -455,3 +455,43 @@ fn test_multiple_pcr_configurations_success() {
 		"Should reject attestation when no PCR configuration matches, got {result:?}"
 	);
 }
+
+/// An empty inner configuration compares nothing, so without a guard it matches every attestation
+/// and silently turns PCR pinning off.
+#[test]
+fn test_empty_pcr_configuration_does_not_match() {
+	let verifier = EnclaveAttestationVerifier::new(vec![vec![]])
+		.with_max_age(TEN_YEARS)
+		.with_skipped_certificate_time_check();
+
+	let result = verifier.verify_attestation_document(&real_attestation_bytes());
+	assert!(
+		matches!(result, Err(EnclaveAttestationError::CodeUntrusted { .. })),
+		"An empty PCR configuration must not satisfy the policy, got {result:?}"
+	);
+}
+
+#[test]
+fn test_attestation_with_a_non_empty_unprotected_header_is_rejected() {
+	let bytes = real_attestation_bytes();
+	let envelope = CoseSign1::from_slice(&bytes).expect("real document parses");
+
+	let tampered = CoseSign1 {
+		unprotected: Header {
+			alg: Some(Algorithm::Assigned(iana::Algorithm::ES256)),
+			..Header::default()
+		},
+		..envelope
+	}
+	.to_vec()
+	.expect("re-encodes");
+
+	let result = real_attestation_verifier().verify_attestation_document(&tampered);
+	assert!(
+		matches!(
+			result,
+			Err(EnclaveAttestationError::AttestationSignatureInvalid(_))
+		),
+		"Unsigned header content must be rejected, got {result:?}"
+	);
+}
