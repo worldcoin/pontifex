@@ -13,6 +13,8 @@
 //!   could have encrypted a response to it with its public key. If the use case requires trusting
 //!   the enclave response, add an additional attestation or signature mechanism.
 //! 3. This module currently does **NOT** verify an attestation on the enclave's public key.
+//! 4. This system does not offer direct replay protection for requests (e.g. a malicious host could inject
+//!   the same ciphertext multiple times). Add a separate mechanism if your trust assumptions require this.
 
 use quantum_box::{PublicKey, SecretKey};
 use zeroize::ZeroizeOnDrop;
@@ -196,7 +198,7 @@ impl ChannelConsumer {
 	///
 	/// # Errors
 	///
-	/// Fails if the operating system CSPRNG is unavailable, or an unxpected seal error.
+	/// Fails if the operating system CSPRNG is unavailable, or sealing unexpectedly fails.
 	pub fn seal_to_enclave(
 		&self,
 		plaintext: &[u8],

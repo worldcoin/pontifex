@@ -74,9 +74,9 @@ let response: HealthStatus = send(connection, &HealthCheck).await?;
 
 The `channel` feature allows establishing an end-to-end encrypted channel, so a client can send data directly to the enclave without anyone else (chiefly the untrusted parent host) being able to read it. Every message is a [`quantum-box`](https://docs.rs/quantum-box) sealed box over X-Wing, a hybrid post-quantum KEM.
 
-The enclave usually generates a keypair per boot and attests its public key. The client then verifies the attestation and seals to the key it carried. Each request and mints its own response key to also receive the response encrypted.
+The enclave usually generates a keypair per boot and attests its public key. The client then verifies the attestation and seals to the key it carried. Each request mints its own response key to receive an encrypted response.
 
-The default flow looks asa follows:
+The default flow looks as follows:
 
 ```rust,ignore
 use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
