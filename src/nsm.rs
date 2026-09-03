@@ -93,6 +93,19 @@ impl SecureModule {
 		nsm_process_request(self.fd, request)
 	}
 
+	/// The `module_id` of this enclave, formatted `i-<instance-id>-enc<enclave-id>`.
+	///
+	/// # Errors
+	///
+	/// Returns an error if the NSM driver returns an error.
+	pub fn module_id(&self) -> Result<String, AttestationError> {
+		match self.send(Request::DescribeNSM) {
+			Response::DescribeNSM { module_id, .. } => Ok(module_id),
+			Response::Error(code) => Err(AttestationError::Nsm(code)),
+			other => unreachable!("NSM answered DescribeNSM with {other:?}"),
+		}
+	}
+
 	/// Create an attestation document, and return it as a binary blob.
 	///
 	/// # Errors
@@ -181,7 +194,7 @@ impl Drop for SecureModule {
 	}
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "nsm"))]
 mod tests {
 	use super::*;
 
