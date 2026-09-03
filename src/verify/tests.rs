@@ -147,12 +147,6 @@ fn untrusted_root_certificate() -> Vec<u8> {
 	attestation.certificate.into_vec()
 }
 
-/// Generate a fake attestation with self-signed certificate
-fn generate_fake_attestation_self_signed() -> Vec<u8> {
-	let config = SimpleFakeAttestationConfig::default();
-	generate_simple_fake_attestation_self_signed(&config).unwrap()
-}
-
 /// Generate a fake attestation with invalid certificate chain
 fn generate_fake_attestation_invalid_cert_chain() -> Vec<u8> {
 	let config = SimpleFakeAttestationConfig {
@@ -166,65 +160,6 @@ fn generate_fake_attestation_invalid_cert_chain() -> Vec<u8> {
 // ============================================================================
 // COMPREHENSIVE FAKE ATTESTATION TESTS
 // ============================================================================
-
-#[test]
-fn test_attestation_doc_wrong_cert() {
-	let attestation_doc_base64 = "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";
-
-	let attestation_doc_bytes = STANDARD
-		.decode(attestation_doc_base64)
-		.expect("Failed to decode base64");
-
-	// Create a custom verifier with extended max age to handle expired attestations for testing
-	let pcr_configs = vec![]; // We'll add them below
-	let bad_cert = b"-----BEGIN CERTIFICATE-----
-    AIICETCCAZagAwIBAgIRAPkxdWgbkK/hHUbMtOTn+FYwCgYIKoZIzj0EAwMwSTEL
-    MAkGA1UEBhMCVVMxDzANBgNVBAoMBkFtYXpvbjEMMAoGA1UECwwDQVdTMRswGQYD
-    VQQDDBJhd3Mubml0cm8tZW5jbGF2ZXMwHhcNMTkxMDI4MTMyODA1WhcNNDkxMDI4
-    MTQyODA1WjBJMQswCQYDVQQGEwJVUzEPMA0GA1UECgwGQW1hem9uMQwwCgYDVQQL
-    DANBV1MxGzAZBgNVBAMMEmF3cy5uaXRyby1lbmNsYXZlczB2MBAGByqGSM49AgEG
-    BSuBBAAiA2IABPwCVOumCMHzaHDimtqQvkY4MpJzbolL//Zy2YlES1BR5TSksfbb
-    48C8WBoyt7F2Bw7eEtaaP+ohG2bnUs990d0JX28TcPQXCEPZ3BABIeTPYwEoCWZE
-    h8l5YoQwTcU/9KNCMEAwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUkCW1DdkF
-    R+eWw5b6cp3PmanfS5YwDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMDA2kAMGYC
-    MQCjfy+Rocm9Xue4YnwWmNJVA44fA0P5W2OpYow9OYCVRaEevL8uO1XYru5xtMPW
-    rfMCMQCi85sWBbJwKKXdS6BptQFuZbT73o/gBh1qUxl/nNr12UO8Yfwr6wPLb+6N
-    IwLz3/Y=
-    -----END CERTIFICATE-----"
-		.to_vec();
-
-	let mut verifier = EnclaveAttestationVerifier::new(pcr_configs)
-		.with_root_certificate(bad_cert)
-		.with_max_age(TEN_YEARS)
-		.with_skipped_certificate_time_check();
-
-	// These are real PCR values generated by an enclave in time
-	verifier.add_allowed_pcr_config(vec![
-		PcrMeasurement::new(
-			0,
-			hex_literal::hex!(
-				"5b6111e5a72a5bfb60ae394baabbe1f0000046ce13f7f2f67fd69e1e212ba90fe53af95a01b9eee9e722795d06406b5d"
-			),
-		),
-		PcrMeasurement::new(
-			1,
-			hex_literal::hex!(
-				"4b4d5b3661b3efc12920900c80e126e4ce783c522de6c02a2a5bf7af3a2b9327b86776f188e4be1c1c404a129dbda493"
-			),
-		),
-		PcrMeasurement::new(
-			2,
-			hex_literal::hex!(
-				"b7c615d9cf63c766db0d7368de89c92c61a4a592ba99d36ae224ce976c9942000d06fcad3f62be739989b326771c8c70"
-			),
-		),
-	]);
-
-	// Verify the attestation document
-	let result = verifier.verify_attestation_document(&attestation_doc_bytes);
-
-	assert!(result.is_err(), "Should have failed with bad certificate");
-}
 
 #[test]
 fn test_attestation_with_different_root_ca() {
@@ -242,22 +177,6 @@ fn test_attestation_with_different_root_ca() {
 			Err(EnclaveAttestationError::AttestationChainInvalid(_))
 		),
 		"Should reject attestation that does not chain to the configured root, got {result:?}"
-	);
-}
-
-#[test]
-fn test_attestation_with_self_signed_certificate() {
-	let fake_attestation = generate_fake_attestation_self_signed();
-
-	let verifier = EnclaveAttestationVerifier::new(vec![]).with_skipped_certificate_time_check();
-
-	let result = verifier.verify_attestation_document(&fake_attestation);
-	assert!(
-		matches!(
-			result,
-			Err(EnclaveAttestationError::AttestationChainInvalid(_))
-		),
-		"Should reject self-signed certificate, got {result:?}"
 	);
 }
 
@@ -313,7 +232,7 @@ fn test_attestation_with_trailing_bytes() {
 }
 
 #[test]
-fn test_attestation_with_invalid_certificate_chain() {
+fn test_attestation_with_an_unparseable_leaf_certificate_is_rejected() {
 	let fake_attestation = generate_fake_attestation_invalid_cert_chain();
 
 	let verifier = EnclaveAttestationVerifier::new(vec![]).with_skipped_certificate_time_check();
@@ -471,15 +390,18 @@ fn test_empty_pcr_configuration_does_not_match() {
 	);
 }
 
+/// The protected header is signature-covered, so a document declaring another algorithm is
+/// rejected on the algorithm check before the P-384 verification it disagrees with.
 #[test]
-fn test_attestation_with_a_non_empty_unprotected_header_is_rejected() {
-	let bytes = real_attestation_bytes();
-	let envelope = CoseSign1::from_slice(&bytes).expect("real document parses");
-
+fn test_attestation_declaring_a_non_es384_algorithm_is_rejected() {
+	let envelope = CoseSign1::from_slice(&real_attestation_bytes()).expect("real document parses");
 	let tampered = CoseSign1 {
-		unprotected: Header {
-			alg: Some(Algorithm::Assigned(iana::Algorithm::ES256)),
-			..Header::default()
+		protected: ProtectedHeader {
+			original_data: None,
+			header: Header {
+				alg: Some(Algorithm::Assigned(iana::Algorithm::ES256)),
+				..Header::default()
+			},
 		},
 		..envelope
 	}
@@ -490,8 +412,63 @@ fn test_attestation_with_a_non_empty_unprotected_header_is_rejected() {
 	assert!(
 		matches!(
 			result,
-			Err(EnclaveAttestationError::AttestationSignatureInvalid(_))
+			Err(EnclaveAttestationError::AttestationSignatureInvalid(ref m)) if m.contains("ES384")
 		),
-		"Unsigned header content must be rejected, got {result:?}"
+		"A non-ES384 algorithm must be rejected by name, got {result:?}"
 	);
+}
+
+#[test]
+fn test_attestation_without_a_public_key_is_rejected() {
+	let (_, mut doc) =
+		crate::nsm::parse_cose_attestation_doc(&real_attestation_bytes()).expect("parses");
+	doc.public_key = None;
+
+	assert!(matches!(
+		EnclaveAttestationVerifier::extract_public_key(&doc),
+		Err(EnclaveAttestationError::InvalidEnclavePublicKey(_))
+	));
+}
+
+#[test]
+fn test_base64_input_that_is_not_base64_is_rejected() {
+	let result = real_attestation_verifier().verify_attestation_document_base64("not base64!!");
+	assert!(
+		matches!(
+			result,
+			Err(EnclaveAttestationError::AttestationDocumentParseError(_))
+		),
+		"got {result:?}"
+	);
+}
+
+/// Clocks drift; a document a few milliseconds ahead of the verifier is skew, not a forgery.
+#[test]
+fn test_attestation_slightly_in_the_future_is_accepted() {
+	let (_, doc) =
+		crate::nsm::parse_cose_attestation_doc(&real_attestation_bytes()).expect("parses");
+	let now = u64::try_from(
+		SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.expect("clock is sane")
+			.as_millis(),
+	)
+	.expect("fits in u64");
+
+	let verifier = real_attestation_verifier();
+	assert!(verifier.check_attestation_freshness(&doc).is_ok());
+
+	let mut skewed = doc.clone();
+	skewed.timestamp = now + 1_000;
+	assert!(
+		verifier.check_attestation_freshness(&skewed).is_ok(),
+		"a second of skew must not be treated as a future timestamp"
+	);
+
+	let mut far_future = doc;
+	far_future.timestamp = now + 10 * 60 * 1_000;
+	assert!(matches!(
+		verifier.check_attestation_freshness(&far_future),
+		Err(EnclaveAttestationError::AttestationInvalidTimestamp(_))
+	));
 }

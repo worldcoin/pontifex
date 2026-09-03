@@ -12,9 +12,8 @@
 //! 2. The response from the enclave is **NOT** attested. Quantum boxes are anonymous, anyone
 //!   could have encrypted a response to it with its public key. If the use case requires trusting
 //!   the enclave response, add an additional attestation or signature mechanism.
-//! 3. Build the consumer with [`ChannelConsumer::from_attestation`] so the enclave's public key
-//!   comes from a verified attestation. [`ChannelConsumer::from_unverified_public_key`] skips that
-//!   check and trusts whatever key it is handed.
+//! 3. Build the consumer with [`ChannelConsumer::from_attestation`], so the key comes from a
+//!   verified attestation. [`ChannelConsumer::from_unverified_public_key`] skips that check.
 //! 4. This system does not offer direct replay protection for requests (e.g. a malicious host could inject
 //!   the same ciphertext multiple times). Add a separate mechanism if your trust assumptions require this.
 
@@ -264,7 +263,7 @@ impl ChannelConsumer {
 /// # use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
 /// # const DOMAIN: ChannelDomain = ChannelDomain::new("pontifex/doc");
 /// # let enclave = ChannelEnclave::generate(DOMAIN)?;
-/// # let consumer = ChannelConsumer::new(DOMAIN, &enclave.public_key())?;
+/// # let consumer = ChannelConsumer::from_unverified_public_key(DOMAIN, &enclave.public_key())?;
 /// # let (request, opener) = consumer.seal_to_enclave(b"inputs")?;
 /// # let (_, sealer) = enclave.open(&request)?;
 /// # let response = sealer.seal(b"result")?;
@@ -591,10 +590,11 @@ mod tests {
 		assert!(matches!(err, ChannelError::Attestation(_)), "got {err:?}");
 	}
 
-	/// The fixture attests a 32-byte key rather than an X-Wing one, so reaching the key-format
-	/// error is what proves the attestation itself verified and the key was unpacked from it.
+	/// Proves verification runs before the key is parsed. It does not prove the key came from the
+	/// attestation rather than elsewhere in the document, and the success path stays uncovered:
+	/// the fixture attests a 32-byte key, not a 1216-byte X-Wing one.
 	#[test]
-	fn from_attestation_unpacks_the_attested_key() {
+	fn from_attestation_verifies_before_parsing_the_key() {
 		let err = ChannelConsumer::from_attestation(
 			TEST_DOMAIN,
 			&real_attestation_verifier(),

@@ -3,7 +3,7 @@
 //! This module contains the core types used for AWS Nitro Enclave attestation
 //! document parsing, verification, and PCR configuration management.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 /// Represents errors that can occur during enclave attestation verification
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -48,7 +48,10 @@ pub enum EnclaveAttestationError {
 }
 
 /// Verified attestation data from the enclave.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Only a verifier constructs this, so it deliberately does not implement `Deserialize`: a value
+/// decoded from a request body would claim a verification that never happened.
+#[derive(Debug, Clone, Serialize)]
 pub struct VerifiedAttestation {
 	/// The public key the enclave attested, as raw bytes
 	pub enclave_public_key: Vec<u8>,
@@ -57,6 +60,11 @@ pub struct VerifiedAttestation {
 	pub timestamp: u64,
 	/// The module ID of the enclave
 	pub module_id: String,
+	/// The signed nonce, if the enclave was asked for one. Compare it against the challenge you
+	/// issued — the timestamp alone does not prove the document was minted for this session.
+	pub nonce: Option<Vec<u8>>,
+	/// The signed user data, if the enclave supplied any.
+	pub user_data: Option<Vec<u8>>,
 }
 
 impl VerifiedAttestation {
@@ -66,12 +74,22 @@ impl VerifiedAttestation {
 	/// * `enclave_public_key` - The public key the enclave attested, as raw bytes
 	/// * `timestamp` - The timestamp of the attestation
 	/// * `module_id` - The module ID of the enclave
+	/// * `nonce` - The signed nonce, if any
+	/// * `user_data` - The signed user data, if any
 	#[must_use]
-	pub const fn new(enclave_public_key: Vec<u8>, timestamp: u64, module_id: String) -> Self {
+	pub const fn new(
+		enclave_public_key: Vec<u8>,
+		timestamp: u64,
+		module_id: String,
+		nonce: Option<Vec<u8>>,
+		user_data: Option<Vec<u8>>,
+	) -> Self {
 		Self {
 			enclave_public_key,
 			timestamp,
 			module_id,
+			nonce,
+			user_data,
 		}
 	}
 }

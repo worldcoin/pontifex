@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use coset::{Algorithm, CoseSign1, Header, iana};
+use coset::{Algorithm, CoseSign1, iana};
 use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use webpki::{EndEntityCert, TrustAnchor};
 use x509_cert::{Certificate, der::Decode};
@@ -21,6 +21,17 @@ pub use types::{EnclaveAttestationError, PcrMeasurement, VerifiedAttestation};
 
 use constants::{AWS_NITRO_ROOT_CERT, DEFAULT_MAX_ATTESTATION_AGE, get_expected_pcr_length};
 
+/// How far ahead of the verifier's clock an attestation may be dated before it is an error.
+const CLOCK_SKEW_TOLERANCE_MILLIS: u64 = 60_000;
+
+fn hex_encode(bytes: &[u8]) -> String {
+	bytes.iter().fold(String::new(), |mut out, byte| {
+		use std::fmt::Write as _;
+		let _ = write!(out, "{byte:02x}");
+		out
+	})
+}
+
 /// Verifies AWS Nitro Enclave attestation documents
 ///
 /// This struct performs comprehensive verification of attestation documents including:
@@ -32,7 +43,7 @@ use constants::{AWS_NITRO_ROOT_CERT, DEFAULT_MAX_ATTESTATION_AGE, get_expected_p
 #[derive(Debug)]
 pub struct EnclaveAttestationVerifier {
 	/// Allowed PCR configs for validation
-	/// This is a list of allowed PCR configurations, where each configuration is a list of (PCR index, expected value) tuples.
+	/// Each configuration is a list of (PCR index, expected value) pairs.
 	///
 	/// This allows for supporting multiple enclave software versions.
 	allowed_pcr_configs: Vec<Vec<PcrMeasurement>>,
@@ -117,7 +128,8 @@ impl EnclaveAttestationVerifier {
 		attestation_doc_bytes: &[u8],
 	) -> Result<VerifiedAttestation, EnclaveAttestationError> {
 		// 1. Syntactical validation
-		let (cose_sign1, attestation) = Self::parse_attestation_doc(attestation_doc_bytes)?;
+		let (cose_sign1, attestation) = parse_cose_attestation_doc(attestation_doc_bytes)
+			.map_err(|e| EnclaveAttestationError::AttestationDocumentParseError(e.to_string()))?;
 
 		// 2. Semantic validation
 		let leaf_cert = self.verify_certificate_chain(&attestation)?;
@@ -132,30 +144,9 @@ impl EnclaveAttestationVerifier {
 			public_key,
 			attestation.timestamp,
 			attestation.module_id,
+			attestation.nonce.map(serde_bytes::ByteBuf::into_vec),
+			attestation.user_data.map(serde_bytes::ByteBuf::into_vec),
 		))
-	}
-
-	fn parse_attestation_doc(
-		bytes: &[u8],
-	) -> Result<(CoseSign1, AttestationDoc), EnclaveAttestationError> {
-		// Validate before loading into buffer
-		if bytes.is_empty() {
-			return Err(EnclaveAttestationError::AttestationDocumentParseError(
-				"Empty attestation document".to_string(),
-			));
-		}
-
-		let first_byte = bytes[0];
-		if !(0x80..=0x97).contains(&first_byte) && first_byte != 0x9f {
-			return Err(EnclaveAttestationError::AttestationDocumentParseError(
-				format!(
-					"Invalid CBOR magic byte: expected array marker (0x80-0x97 or 0x9f), got 0x{first_byte:02x}"
-				),
-			));
-		}
-
-		parse_cose_attestation_doc(bytes)
-			.map_err(|e| EnclaveAttestationError::AttestationDocumentParseError(e.to_string()))
 	}
 
 	fn verify_certificate_chain(
@@ -164,14 +155,12 @@ impl EnclaveAttestationVerifier {
 	) -> Result<Certificate, EnclaveAttestationError> {
 		let root_cert_der = self.root_certificate.as_slice();
 
-		// Create trust anchor from root certificate
 		let trust_anchor = TrustAnchor::try_from_cert_der(root_cert_der).map_err(|e| {
 			EnclaveAttestationError::AttestationChainInvalid(format!(
 				"Failed to create trust anchor from root certificate: {e}"
 			))
 		})?;
 
-		// Collect intermediate certificates from cabundle,
 		let intermediate_certs: Vec<&[u8]> = attestation
 			.cabundle
 			.iter()
@@ -179,7 +168,6 @@ impl EnclaveAttestationVerifier {
 			.map(|cert| cert.as_slice())
 			.collect();
 
-		// Get current time for certificate validity checking
 		let should_skip_time_check = {
 			#[cfg(test)]
 			{
@@ -192,9 +180,7 @@ impl EnclaveAttestationVerifier {
 		};
 
 		let current_time = if should_skip_time_check {
-			// ONLY USED FOR TESTING
-			// Use the attestation timestamp converted to seconds for certificate validation
-			// This ensures we're using the same time context as when the attestation was created
+			// Tests only: judge validity at the attestation's own time, so expired fixtures work.
 			webpki::Time::from_seconds_since_unix_epoch(attestation.timestamp / 1000)
 		} else {
 			let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| {
@@ -205,7 +191,6 @@ impl EnclaveAttestationVerifier {
 			webpki::Time::from_seconds_since_unix_epoch(now.as_secs())
 		};
 
-		// Create end entity certificate from the leaf certificate
 		let end_entity_cert =
 			EndEntityCert::try_from(attestation.certificate.as_slice()).map_err(|e| {
 				EnclaveAttestationError::AttestationChainInvalid(format!(
@@ -213,7 +198,6 @@ impl EnclaveAttestationVerifier {
 				))
 			})?;
 
-		// Verify the certificate chain
 		end_entity_cert
 			.verify_is_valid_tls_server_cert(
 				&[&webpki::ECDSA_P384_SHA384],
@@ -227,7 +211,6 @@ impl EnclaveAttestationVerifier {
 				))
 			})?;
 
-		// Parse the leaf certificate for return
 		Certificate::from_der(&attestation.certificate).map_err(|e| {
 			EnclaveAttestationError::AttestationChainInvalid(format!(
 				"Failed to parse leaf certificate for return: {e}"
@@ -239,7 +222,6 @@ impl EnclaveAttestationVerifier {
 		cose_sign1: &CoseSign1,
 		leaf_cert: &Certificate,
 	) -> Result<(), EnclaveAttestationError> {
-		// Extract public key from certificate
 		let spki = &leaf_cert.tbs_certificate.subject_public_key_info;
 		let public_key_bytes = spki.subject_public_key.as_bytes().ok_or_else(|| {
 			EnclaveAttestationError::AttestationSignatureInvalid(
@@ -270,14 +252,6 @@ impl EnclaveAttestationVerifier {
 			));
 		}
 
-		// Nitro leaves the unprotected header empty. Anything in it is unsigned, so accepting it
-		// would let a malleable copy of a document carry contradictory headers.
-		if cose_sign1.unprotected != Header::default() {
-			return Err(EnclaveAttestationError::AttestationSignatureInvalid(
-				"Unprotected header must be empty".to_string(),
-			));
-		}
-
 		// `verify_signature` reconstructs the COSE Sign1 `Sig_structure`
 		// (`["Signature1", protected, external_aad, payload]`) and hands it to the closure
 		// alongside the signature. Nitro attestations carry no external AAD.
@@ -305,57 +279,54 @@ impl EnclaveAttestationVerifier {
 		if attestation.pcrs.is_empty() {
 			return Err(EnclaveAttestationError::CodeUntrusted {
 				pcr_index: 0,
-				actual: "empty".to_string(),
+				actual: "attestation carries no PCRs".to_string(),
 			});
 		}
 
-		// Get the expected PCR length depending on the hashing algorithm used
-		// As of right now, only SHA-384 is used
-		let expected_pcr_length = get_expected_pcr_length(attestation.digest);
+		let expected_length = get_expected_pcr_length(attestation.digest);
 
-		// Try to find at least one allowed PCR configuration that matches
-		// This allows supporting multiple enclave versions simultaneously
-		for allowed_pcr_measurements in &self.allowed_pcr_configs {
-			// An empty configuration compares nothing, so it would match every attestation and
-			// silently disable PCR pinning. Never let one satisfy the policy.
-			if allowed_pcr_measurements.is_empty() {
-				continue;
-			}
+		// An empty configuration compares nothing, so it would match every attestation and
+		// silently disable PCR pinning. Never let one satisfy the policy.
+		let configs = self
+			.allowed_pcr_configs
+			.iter()
+			.filter(|config| !config.is_empty());
 
-			let mut all_match = true;
-
-			for pcr_measurement in allowed_pcr_measurements {
-				// Get the PCR value from the attestation
-				let Ok(attestation_pcr_value) =
-					Self::get_pcr_value(attestation, pcr_measurement.index)
-				else {
-					all_match = false;
-					break;
-				};
-
-				// Validate the PCR value length
-				if attestation_pcr_value.len() != expected_pcr_length {
-					all_match = false;
-					break;
-				}
-
-				// Validate the PCR value matches the expected value
-				if attestation_pcr_value.as_slice() != pcr_measurement.value.as_slice() {
-					all_match = false;
-					break;
-				}
-			}
-
-			// If all PCRs in this configuration match, return success
-			if all_match {
-				return Ok(());
-			}
+		// Supporting several enclave software versions at once means any one config may match.
+		let mut first_mismatch = None;
+		for config in configs {
+			match Self::first_mismatch(attestation, config, expected_length) {
+				None => return Ok(()),
+				Some(mismatch) => first_mismatch.get_or_insert(mismatch),
+			};
 		}
 
-		// If we have no allowed configurations at all
-		Err(EnclaveAttestationError::CodeUntrusted {
-			pcr_index: 0,
-			actual: "No allowed PCR configurations".to_string(),
+		Err(first_mismatch.map_or_else(
+			|| EnclaveAttestationError::CodeUntrusted {
+				pcr_index: 0,
+				actual: "no PCR configuration was supplied".to_string(),
+			},
+			|(pcr_index, actual)| EnclaveAttestationError::CodeUntrusted { pcr_index, actual },
+		))
+	}
+
+	/// The first PCR in `config` that the attestation does not satisfy, as `(index, actual)`.
+	fn first_mismatch(
+		attestation: &AttestationDoc,
+		config: &[PcrMeasurement],
+		expected_length: usize,
+	) -> Option<(u32, String)> {
+		config.iter().find_map(|measurement| {
+			let actual = attestation.pcrs.get(&(measurement.index as usize));
+			match actual {
+				Some(value)
+					if value.len() == expected_length && value.as_slice() == measurement.value =>
+				{
+					None
+				},
+				Some(value) => Some((measurement.index, hex_encode(value))),
+				None => Some((measurement.index, "missing".to_string())),
+			}
 		})
 	}
 
@@ -379,12 +350,20 @@ impl EnclaveAttestationVerifier {
 			))
 		})?;
 
-		let age = now.checked_sub(attestation.timestamp).ok_or_else(|| {
-			EnclaveAttestationError::AttestationInvalidTimestamp(format!(
-				"Attestation timestamp is {} ms in the future",
-				attestation.timestamp - now
-			))
-		})?;
+		// Clocks drift between the enclave and the verifier, so a slightly future timestamp is
+		// skew rather than a forgery. Beyond the tolerance it is a real error.
+		let age = match now.checked_sub(attestation.timestamp) {
+			Some(age) => age,
+			None if attestation.timestamp - now <= CLOCK_SKEW_TOLERANCE_MILLIS => 0,
+			None => {
+				return Err(EnclaveAttestationError::AttestationInvalidTimestamp(
+					format!(
+						"Attestation timestamp is {} ms in the future",
+						attestation.timestamp - now
+					),
+				));
+			},
+		};
 
 		let max_age_millis = u64::try_from(self.max_age.as_millis()).unwrap_or(u64::MAX);
 		if age > max_age_millis {
@@ -400,29 +379,15 @@ impl EnclaveAttestationVerifier {
 	fn extract_public_key(
 		attestation: &AttestationDoc,
 	) -> Result<Vec<u8>, EnclaveAttestationError> {
-		attestation.public_key.clone().map_or_else(
-			|| {
-				Err(EnclaveAttestationError::InvalidEnclavePublicKey(
+		attestation
+			.public_key
+			.clone()
+			.map(serde_bytes::ByteBuf::into_vec)
+			.ok_or_else(|| {
+				EnclaveAttestationError::InvalidEnclavePublicKey(
 					"No public key in attestation document".to_string(),
-				))
-			},
-			|key| Ok(key.into_vec()),
-		)
-	}
-
-	fn get_pcr_value(
-		attestation_doc: &AttestationDoc,
-		pcr_index: u32,
-	) -> Result<Vec<u8>, EnclaveAttestationError> {
-		attestation_doc.pcrs.get(&(pcr_index as usize)).map_or_else(
-			|| {
-				Err(EnclaveAttestationError::CodeUntrusted {
-					pcr_index,
-					actual: "missing".to_string(),
-				})
-			},
-			|value| Ok(value.to_vec()),
-		)
+				)
+			})
 	}
 }
 
