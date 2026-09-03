@@ -32,6 +32,16 @@ jobs:
             - name: Build
               run: cargo build
 
+            - name: Install cargo-hack
+              uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b #v2.87.4 https://github.com/taiki-e/install-action/releases/tag/v2.87.4
+              with:
+                  tool: cargo-hack@0.6.45
+
+            - name: Check each feature on its own
+              run: |
+                  cargo hack check --each-feature --no-dev-deps
+                  cargo hack check --each-feature --all-targets
+
     test:
         name: Tests
         runs-on: ubuntu-latest

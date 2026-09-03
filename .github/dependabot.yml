@@ -6,3 +6,6 @@ updates:
     interval: "monthly"
   assignees:
   - "Takaros999"
+  - "kilianglas"
+  cooldown:
+    default-days: 14

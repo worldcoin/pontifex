@@ -70,9 +70,34 @@ let connection = ConnectionDetails::new(ENCLAVE_CID, ENCLAVE_PORT);
 let response: HealthStatus = send(connection, &HealthCheck).await?;
 ```
 
-## Example
+### Sealed Channel
 
-See the [`example`](example) directory for a complete working example.
+The `channel` feature allows establishing an end-to-end encrypted channel, so a client can send data directly to the enclave without anyone else (chiefly the untrusted parent host) being able to read it. Every message is a [`quantum-box`](https://docs.rs/quantum-box) sealed box over X-Wing, a hybrid post-quantum KEM.
+
+The enclave usually generates a keypair per boot and attests its public key. The client then verifies the attestation and seals to the key it carried. Each request mints its own response key to receive an encrypted response.
+
+The default flow looks as follows:
+
+```rust,ignore
+use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
+
+// The name is the only lever for a breaking wire change, so carry a version in it.
+const DOMAIN: ChannelDomain = ChannelDomain::new("my-protocol/match_v1");
+
+// Enclave (usually once per boot): Attest `enclave.public_key()`, then hand those bytes out.
+let enclave = ChannelEnclave::generate(DOMAIN)?;
+
+// End consumer: uses an *attested* public key. NOTE: attestation is currently not verified here.
+let consumer = ChannelConsumer::new(DOMAIN, &attested_public_key)?;
+let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;
+
+// Enclave: open the request, seal the one reply it belongs to.
+let (plaintext, sealer) = enclave.open(&sealed_request)?;
+let sealed_response = sealer.seal(b"result")?;
+
+// End consumer: only this opener can open that response.
+let result = opener.open_from_enclave(&sealed_response)?;
+```
 
 ## Releases
 
@@ -80,4 +105,4 @@ Releases are automated with [release-plz](https://release-plz.dev)
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](https://github.com/worldcoin/pontifex/blob/main/LICENSE) file for details.

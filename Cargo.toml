@@ -16,8 +16,8 @@ description = "An abstraction for building and interacting with AWS Nitro enclav
 
 [features]
 default=["http"]
-client = []
-server = ["tokio/rt"]
+client = ["dep:tokio-vsock", "dep:rmp-serde"]
+server = ["tokio/rt", "dep:tokio-vsock", "dep:rmp-serde"]
 nsm = ["nsm-types", "aws-nitro-enclaves-nsm-api/nix", "tokio/sync"]
 nsm-types = [
     "dep:sha2",
@@ -27,6 +27,10 @@ nsm-types = [
     "dep:aws-nitro-enclaves-nsm-api",
 ]
 http = ["_vsock-https"]
+channel = [
+    "dep:quantum-box",
+    "dep:zeroize",
+]
 kms = [
     "_vsock-https",
     "dep:aws-types",
@@ -36,6 +40,7 @@ kms = [
 ]
 # The HTTPS-over-vsock transport, shared by `http` and `kms`.
 _vsock-https = [
+    "dep:tokio-vsock",
     "dep:hyper",
     "dep:rustls",
     "dep:hyper-util",
@@ -48,14 +53,15 @@ _vsock-https = [
 all-features = true
 
 [dependencies]
+const-fnv1a-hash = "1"
 serde = "1"
 tracing = "0.1"
-rmp-serde = "1"
 thiserror = "2"
-tokio-vsock = "0.7"
+rmp-serde = { version = "1", optional = true }
+tokio-vsock = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["io-util"] }
 sha2 = { version = "0.10", optional = true }
 aws-types = { version = "1", optional = true }
-tokio = { version = "1", features = ["io-util"] }
 serde_bytes = { version = "0.11", optional = true }
 tower-service = { version = "0.3", optional = true }
 hyper = { version = "1.7", features = ["client"], optional = true }
@@ -87,7 +93,8 @@ rustls = { version = "0.23", optional = true, default-features = false, features
     "std",
     "tls12",
 ] }
-const-fnv1a-hash = "1.1.0"
+quantum-box = { version = "0.1", optional = true }
+zeroize = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
