@@ -72,39 +72,33 @@ let response: HealthStatus = send(connection, &HealthCheck).await?;
 
 ### Sealed Channel
 
-The `channel` feature adds an end-to-end encrypted channel to a specific enclave boot, so the
-untrusted parent instance forwarding the bytes never sees the plaintext. Every message is a
-[`quantum-box`](https://docs.rs/quantum-box) sealed box over the X-Wing hybrid KEM.
+The `channel` feature allows establishing an end-to-end encrypted channel, so a client can send data directly to the enclave without anyone else (chiefly the untrusted parent host) being able to read it. Every message is a [`quantum-box`](https://docs.rs/quantum-box) sealed box over X-Wing, a hybrid post-quantum KEM.
 
-The enclave generates a keypair per boot and attests its public key; the client verifies the
-attestation and seals to the key it carried. Each request carries a fresh reply key the enclave
-seals the response to, so only that requester can open it. Both sides name the same
-`ChannelDomain`.
+The enclave usually generates a keypair per boot and attests its public key. The client then verifies the attestation and seals to the key it carried. Each request and mints its own response key to also receive the response encrypted.
+
+The default flow looks asa follows:
 
 ```rust,ignore
-use pontifex::channel::{ChannelDomain, Requester, Responder};
+use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
 
-const DOMAIN: ChannelDomain = ChannelDomain::new("my-protocol/match", 1);
+// The name is the only lever for a breaking wire change, so carry a version in it.
+const DOMAIN: ChannelDomain = ChannelDomain::new("my-protocol/match_v1");
 
-// Enclave, once per boot. Attest `responder.public_key()`.
-let responder = Responder::generate(DOMAIN)?;
+// Enclave (usually once per boot): Attest `enclave.public_key()`, then hand those bytes out.
+let enclave = ChannelEnclave::generate(DOMAIN)?;
 
-// Client, per request, against the key the verified attestation carried.
-let requester = Requester::new(DOMAIN, attested_public_key)?;
-let (sealed_request, opener) = requester.seal(b"inputs")?;
+// End consumer: uses an *attested* public key. NOTE: attestation is currently not verified here.
+let consumer = ChannelConsumer::new(DOMAIN, &attested_public_key)?;
+let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;
 
 // Enclave: open the request, seal the one reply it belongs to.
-let (plaintext, sealer) = responder.open(&sealed_request)?;
+let (plaintext, sealer) = enclave.open(&sealed_request)?;
 let sealed_response = sealer.seal(b"result")?;
 
-// Client: only this requester can open that response.
-let result = opener.open(&sealed_response)?;
+// End consumer: only this opener can open that response.
+let result = opener.open_from_enclave(&sealed_response)?;
 ```
-
-## Example
-
-See the [`example`](example) directory for a complete working example.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](https://github.com/worldcoin/pontifex/blob/main/LICENSE) file for details.
