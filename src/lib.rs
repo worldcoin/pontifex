@@ -86,7 +86,7 @@ pub use nsm::SecureModule;
 pub use nsm::{AttestationDoc, AttestationError};
 
 #[cfg(all(test, feature = "attestation"))]
-mod test_support;
+mod test_fixtures;
 
 /// Verification of Nitro Enclave attestation documents.
 #[cfg(feature = "attestation")]

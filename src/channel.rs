@@ -346,7 +346,7 @@ mod tests {
 	};
 	use quantum_box::{PublicKey, SecretKey};
 
-	use crate::test_support::{real_attestation_bytes, real_attestation_verifier};
+	use crate::test_fixtures::{real_attestation_bytes, real_attestation_verifier};
 
 	const TEST_DOMAIN: ChannelDomain = ChannelDomain::new("pontifex/test");
 

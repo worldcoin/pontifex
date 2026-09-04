@@ -531,7 +531,7 @@ mod tests {
 	use serde_bytes::ByteBuf;
 
 	use super::*;
-	use crate::test_support::{
+	use crate::test_fixtures::{
 		ATTESTED_PUBLIC_KEY, TEN_YEARS, real_attestation_bytes, real_attestation_verifier,
 	};
 
