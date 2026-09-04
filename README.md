@@ -79,52 +79,15 @@ use pontifex::attestation::{PcrConfig, Verifier};
 use std::time::Duration;
 
 // Verification succeeds if *any* of the allowed configurations matches, which allows
-// supporting multiple enclave software versions at once. There is no default freshness
-// window: only you know how the document reaches you and how long a replay stays useful.
+// supporting multiple enclave software versions at once.
 let verifier = Verifier::new(
     vec![PcrConfig::new(pcr0).with_pcr(1, pcr1).with_pcr(2, pcr2)],
     Duration::from_secs(3 * 60 * 60),
 );
 
-// Takes the raw COSE bytes: how the document reached you is your protocol's business.
 let attestation = verifier.verify_attestation_document(&attestation_doc)?;
 println!("enclave module: {}", attestation.document().module_id);
 ```
-
-`VerifiedAttestation` wraps the whole signed document — `nonce`, `user_data`, PCRs and all — and
-only the verifier can construct one, so the type is itself proof the document was checked.
-
-#### Choosing PCRs
-
-PCR0, the hash of the whole enclave image, is a required argument to `PcrConfig::new` rather than
-an entry in a list — a configuration that pins no code identity does not compile. Every other PCR
-is optional. Listing several configurations means "any one of these releases", and each is matched
-in full, so values from different releases can never be mixed.
-
-| PCR | measures | pin it? |
-| --- | --- | --- |
-| 0 | the entire enclave image | **required** |
-| 1 | kernel and bootstrap | usually |
-| 2 | application ramdisk | usually |
-| 3 | parent IAM role | only to tie the enclave to one role |
-| 4 | parent instance ID | rarely — this pins one EC2 instance |
-| 8 | enclave image signing certificate | if you sign your enclaves |
-
-PCRs you do not list are not checked. PCR0 already covers the image as a whole, so pinning 1 and 2
-alongside it is defence in depth rather than a separate guarantee.
-
-#### Field sizes
-
-The document has three application-controlled fields, and they are not the same size:
-
-| field | limit | used by |
-| --- | --- | --- |
-| `public_key` | 1024 bytes | `channel`, for its key commitment |
-| `user_data` | 512 bytes | yours |
-| `nonce` | 512 bytes | yours, for replay protection |
-
-A key of 1024 bytes or less goes straight in `public_key` and needs no commitment. `channel` only
-uses one because an X-Wing key is 1216 bytes.
 
 ### Sealed Channel
 
