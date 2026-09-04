@@ -18,7 +18,7 @@ description = "An abstraction for building and interacting with AWS Nitro enclav
 default=["http"]
 client = ["dep:tokio-vsock", "dep:rmp-serde"]
 server = ["tokio/rt", "dep:tokio-vsock", "dep:rmp-serde"]
-nsm = ["nsm-types", "aws-nitro-enclaves-nsm-api/nix", "tokio/sync", "dep:sha2"]
+nsm = ["nsm-types", "aws-nitro-enclaves-nsm-api/nix", "tokio/sync"]
 nsm-types = [
     "dep:coset",
     "dep:ciborium",
@@ -44,7 +44,6 @@ kms = [
 attestation = [
     "nsm-types",
     "dep:base64",
-    "dep:sha2",
     "dep:p384",
     "dep:webpki",
     "dep:x509-cert",

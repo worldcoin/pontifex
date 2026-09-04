@@ -18,15 +18,39 @@
 //!   the same ciphertext multiple times). Add a separate mechanism if your trust assumptions require this.
 
 use quantum_box::{PublicKey, SecretKey};
+use sha2::{Digest as _, Sha256};
 use zeroize::ZeroizeOnDrop;
 
-use crate::verify::{EnclaveAttestationError, EnclaveAttestationVerifier, VerifiedAttestation};
+use crate::attestation::{
+	EnclaveAttestationError, EnclaveAttestationVerifier, VerifiedAttestation,
+};
 
 pub use quantum_box::Error as SealedBoxError;
 pub use zeroize::Zeroizing;
 
 /// Length of an X-Wing encapsulation key: ML-KEM-768 (1184) plus X25519 (32).
 const RESPONSE_KEY_LEN: usize = 1216;
+
+/// Domain separator for [`public_key_commitment`], versioned so a future commitment format
+/// cannot be mistaken for this one.
+const COMMITMENT_DOMAIN: &[u8] = b"pontifex/public-key-commitment/v1\0";
+
+/// Returns the 32-byte commitment to `public_key`.
+///
+/// An X-Wing key is 1216 bytes and does not fit the attestation document's 1024-byte `public_key`
+/// field, so the enclave attests this instead and hands the key over alongside the document.
+///
+/// Computes `SHA-256(domain || public_key)` over the raw key bytes, before any transport encoding.
+/// The domain separator is what stops a digest computed for some other purpose — `user_data` is a
+/// free-form field — being replayed as a commitment to an attacker's key.
+#[must_use]
+pub fn public_key_commitment(public_key: &[u8]) -> [u8; 32] {
+	Sha256::new()
+		.chain_update(COMMITMENT_DOMAIN)
+		.chain_update(public_key)
+		.finalize()
+		.into()
+}
 
 // Bound into the `info` so one key is never used for both directions.
 const REQUEST: u8 = 0;
@@ -47,6 +71,9 @@ pub enum ChannelError {
 	/// The attestation carrying the enclave's public key did not verify.
 	#[error("ChannelError::Attestation: {0}")]
 	Attestation(#[from] EnclaveAttestationError),
+	/// The attestation verified, but its `user_data` does not commit to the supplied public key.
+	#[error("ChannelError::KeyCommitmentMismatch")]
+	KeyCommitmentMismatch,
 }
 
 /// The protocol name bound into every seal on a channel.
@@ -110,7 +137,7 @@ impl ChannelEnclave {
 	/// The key itself does not fit the NSM's 1024-byte `public_key` field; this does.
 	#[must_use]
 	pub fn public_key_commitment(&self) -> [u8; 32] {
-		crate::public_key_commitment(&self.public_key())
+		public_key_commitment(&self.public_key())
 	}
 
 	/// Opens a sealed request, returning the plaintext and the sealer for its one response.
@@ -211,8 +238,13 @@ impl ChannelConsumer {
 		attestation_doc: &[u8],
 		enclave_public_key: &[u8],
 	) -> Result<(Self, VerifiedAttestation), ChannelError> {
-		let attestation = verifier
-			.verify_attestation_document_with_key_commitment(attestation_doc, enclave_public_key)?;
+		let attestation = verifier.verify_attestation_document(attestation_doc)?;
+
+		let expected = public_key_commitment(enclave_public_key);
+		if attestation.user_data.as_deref() != Some(expected.as_slice()) {
+			return Err(ChannelError::KeyCommitmentMismatch);
+		}
+
 		let consumer = Self {
 			domain,
 			enclave_public_key: PublicKey::from_bytes(enclave_public_key)?,
@@ -310,14 +342,11 @@ impl ResponseOpener {
 mod tests {
 	use super::{
 		ChannelConsumer, ChannelDomain, ChannelEnclave, ChannelError, REQUEST, RESPONSE,
-		RESPONSE_KEY_LEN, ResponseOpener, SealedBoxError,
+		RESPONSE_KEY_LEN, ResponseOpener, SealedBoxError, public_key_commitment,
 	};
 	use quantum_box::{PublicKey, SecretKey};
 
-	use crate::{
-		test_support::{real_attestation_bytes, real_attestation_verifier},
-		verify::EnclaveAttestationError,
-	};
+	use crate::test_support::{real_attestation_bytes, real_attestation_verifier};
 
 	const TEST_DOMAIN: ChannelDomain = ChannelDomain::new("pontifex/test");
 
@@ -622,10 +651,7 @@ mod tests {
 		)
 		.expect_err("the fixture does not commit to this key");
 
-		assert_eq!(
-			err,
-			ChannelError::Attestation(EnclaveAttestationError::KeyCommitmentMismatch)
-		);
+		assert_eq!(err, ChannelError::KeyCommitmentMismatch);
 	}
 
 	/// What the enclave attests must be the commitment to what the consumer seals to, or the two
@@ -636,7 +662,7 @@ mod tests {
 
 		assert_eq!(
 			enclave.public_key_commitment(),
-			crate::public_key_commitment(&enclave.public_key())
+			public_key_commitment(&enclave.public_key())
 		);
 	}
 
@@ -648,5 +674,34 @@ mod tests {
 
 		assert!(enclave().public_key().len() > NSM_PUBLIC_KEY_LIMIT);
 		assert!(enclave().public_key_commitment().len() <= NSM_PUBLIC_KEY_LIMIT);
+	}
+
+	#[test]
+	fn a_commitment_is_stable() {
+		// Pinned so a change to the domain separator or the hash is a deliberate, visible break.
+		assert_eq!(
+			public_key_commitment(b"key"),
+			hex_literal::hex!("77634addf9ae031e3d621410d643d1f13b7d426876627b53d89ea0f7bba71cfb")
+		);
+	}
+
+	#[test]
+	fn distinct_keys_commit_differently() {
+		assert_ne!(
+			public_key_commitment(b"key-a"),
+			public_key_commitment(b"key-b")
+		);
+	}
+
+	/// `user_data` is a free-form field, so a bare digest computed there for another purpose could
+	/// otherwise be replayed as a commitment to an attacker's key.
+	#[test]
+	fn the_domain_separator_is_covered() {
+		use sha2::{Digest as _, Sha256};
+
+		assert_ne!(
+			public_key_commitment(b"key").as_slice(),
+			Sha256::digest(b"key").as_slice()
+		);
 	}
 }

@@ -115,7 +115,7 @@ COSE Sign1 signature, certificate chain up to the AWS Nitro root, PCR values, an
 `channel` feature turns it on, so a sealed channel keys off a verified attestation.
 
 ```rust,ignore
-use pontifex::verify::{EnclaveAttestationVerifier, PcrMeasurement};
+use pontifex::attestation::{EnclaveAttestationVerifier, PcrMeasurement};
 
 // Verification succeeds if *any* of the allowed configurations matches,
 // which allows supporting multiple enclave software versions at once.
@@ -131,9 +131,9 @@ println!("enclave module: {}", attestation.module_id);
 ```
 
 `VerifiedAttestation` carries the signed `nonce` and `user_data`, so a custom payload can be
-checked against whatever challenge you issued. To bind a key too large for the document's
-1024-byte `public_key` field, attest `pontifex::public_key_commitment(&key)` in `user_data` and
-verify with `verify_attestation_document_with_key_commitment`.
+checked against whatever challenge you issued. Binding a key too large for the document's
+1024-byte `public_key` field is what `channel` does with
+`pontifex::channel::public_key_commitment`; see below.
 
 ## Releases
 

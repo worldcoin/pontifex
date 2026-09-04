@@ -85,19 +85,14 @@ pub use nsm::SecureModule;
 #[cfg(feature = "nsm-types")]
 pub use nsm::{AttestationDoc, AttestationError};
 
-#[cfg(any(feature = "nsm", feature = "attestation", feature = "channel"))]
-mod key_commitment;
-#[cfg(any(feature = "nsm", feature = "attestation", feature = "channel"))]
-pub use key_commitment::public_key_commitment;
-
 #[cfg(all(test, feature = "attestation"))]
 mod test_support;
 
 /// Verification of Nitro Enclave attestation documents.
 #[cfg(feature = "attestation")]
-pub mod verify;
+pub mod attestation;
 #[cfg(feature = "attestation")]
-pub use verify::{EnclaveAttestationError, EnclaveAttestationVerifier, PcrMeasurement};
+pub use attestation::{EnclaveAttestationError, EnclaveAttestationVerifier, PcrMeasurement};
 
 /// KMS functionality.
 #[cfg(feature = "kms")]

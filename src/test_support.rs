@@ -6,7 +6,7 @@
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 
-use crate::verify::{EnclaveAttestationVerifier, PcrMeasurement};
+use crate::attestation::{EnclaveAttestationVerifier, PcrMeasurement};
 
 /// A real attestation document, base64-encoded.
 pub const REAL_ATTESTATION_DOC_B64: &str = include_str!("../tests/real-attestation-doc.b64");
