@@ -11,7 +11,7 @@ use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use webpki::{EndEntityCert, TrustAnchor};
 use x509_cert::{Certificate, der::Decode};
 
-use crate::nsm::{AttestationDoc, Digest, parse_cose_attestation_doc};
+use crate::nsm::{AttestationDoc, Digest};
 
 /// AWS Nitro Root Certificate (G1), in DER form.
 ///
@@ -40,6 +40,7 @@ pub const fn get_expected_pcr_length(digest: Digest) -> usize {
 
 /// Represents errors that can occur during enclave attestation verification
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
 	/// Failed to parse attestation document
 	#[error("Failed to parse attestation document: {0}")]
@@ -79,15 +80,15 @@ pub enum Error {
 /// An attestation document that has passed verification.
 ///
 /// Only [`Verifier`] constructs this, so the type in a signature is itself proof the document was
-/// checked. An [`AttestationDoc`] alone only means "parsed" — [`crate::nsm::parse_raw_attestation_doc`]
-/// verifies nothing.
+/// checked. An [`AttestationDoc`] alone only means "parsed"; parsing verifies nothing.
 ///
 /// The wrapped document is private, so no other module — inside this crate or out — can mint one:
 ///
 /// ```compile_fail,E0603
-/// # use pontifex::{attestation::VerifiedAttestation, nsm::parse_raw_attestation_doc};
-/// let parsed = parse_raw_attestation_doc(b"...").unwrap();
+/// # use pontifex::{attestation::VerifiedAttestation, nsm::AttestationDoc};
+/// # fn forge(parsed: AttestationDoc) {
 /// let forged = VerifiedAttestation(parsed); // the field is private
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct VerifiedAttestation(AttestationDoc);
@@ -142,17 +143,10 @@ impl PcrConfig {
 		}
 	}
 
-	/// Also pins `index`. Passing [`PCR_ENCLAVE_IMAGE`] replaces the image measurement, so there
-	/// is only ever one value for it.
+	/// Also pins `index`. Passing [`PCR_ENCLAVE_IMAGE`] adds a second constraint on PCR0 rather
+	/// than replacing the one given to [`Self::new`]; if the two disagree, nothing matches.
 	#[must_use]
 	pub fn with_pcr(mut self, index: u32, value: impl Into<Vec<u8>>) -> Self {
-		let value = value.into();
-		if index == PCR_ENCLAVE_IMAGE {
-			if let Ok(image) = <[u8; PCR_LENGTH]>::try_from(value.as_slice()) {
-				self.enclave_image = image;
-			}
-			return self;
-		}
 		self.additional.push(PcrMeasurement::new(index, value));
 		self
 	}
@@ -258,7 +252,7 @@ impl Verifier {
 		attestation_doc_bytes: &[u8],
 	) -> Result<VerifiedAttestation, Error> {
 		// 1. Syntactical validation
-		let (cose_sign1, attestation) = parse_cose_attestation_doc(attestation_doc_bytes)
+		let (attestation, cose_sign1) = AttestationDoc::from_bytes(attestation_doc_bytes)
 			.map_err(|e| Error::AttestationDocumentParseError(e.to_string()))?;
 
 		// 2. Semantic validation
@@ -388,6 +382,19 @@ impl Verifier {
 		}
 
 		let expected_length = get_expected_pcr_length(attestation.digest);
+
+		if self
+			.allowed_pcr_configs
+			.iter()
+			.any(|config| config.enclave_image == [0; PCR_LENGTH])
+		{
+			return Err(Error::CodeUntrusted {
+				pcr_index: PCR_ENCLAVE_IMAGE,
+				actual: "configuration pins an all-zero PCR0, which every debug-mode enclave \
+				         reports regardless of the code it runs"
+					.to_string(),
+			});
+		}
 
 		// Supporting several enclave software versions at once means any one config may match.
 		// Each `PcrConfig` necessarily pins PCR0, so none of them can match vacuously.
@@ -611,8 +618,7 @@ mod tests {
 	/// `verify_cose_signature` rather than failing earlier on the certificate chain.
 	fn real_attestation_with_tampered_payload() -> Vec<u8> {
 		let mut bytes = real_attestation_bytes();
-		let (_, attestation) =
-			crate::nsm::parse_cose_attestation_doc(&bytes).expect("real document parses");
+		let (attestation, _) = AttestationDoc::from_bytes(&bytes).expect("real document parses");
 		let pcr0 = attestation.pcrs.get(&0).expect("real document has PCR0");
 
 		let offset = bytes
@@ -630,8 +636,7 @@ mod tests {
 	/// failing earlier on a malformed anchor.
 	fn untrusted_root_certificate() -> Vec<u8> {
 		let bytes = real_attestation_bytes();
-		let (_, attestation) =
-			crate::nsm::parse_cose_attestation_doc(&bytes).expect("real document parses");
+		let (attestation, _) = AttestationDoc::from_bytes(&bytes).expect("real document parses");
 		attestation.certificate.into_vec()
 	}
 
@@ -864,8 +869,7 @@ mod tests {
 	/// Clocks drift; a document a few milliseconds ahead of the verifier is skew, not a forgery.
 	#[test]
 	fn test_attestation_slightly_in_the_future_is_accepted() {
-		let (_, doc) =
-			crate::nsm::parse_cose_attestation_doc(&real_attestation_bytes()).expect("parses");
+		let (doc, _) = AttestationDoc::from_bytes(&real_attestation_bytes()).expect("parses");
 		let now = u64::try_from(
 			SystemTime::now()
 				.duration_since(UNIX_EPOCH)

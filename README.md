@@ -100,20 +100,18 @@ The default flow looks as follows:
 ```rust,ignore
 use pontifex::{SecureModule, channel::{ChannelConsumer, ChannelDomain, ChannelEnclave}};
 
-// The name is the only lever for a breaking wire change, so carry a version in it.
 const DOMAIN: ChannelDomain = ChannelDomain::new("my-protocol/match_v1");
 
-// Enclave (usually once per boot): generate a channel key and attest a commitment to it.
+// Enclave (usually once per boot): generate a channel key and attest the public key used for it.
 let enclave = ChannelEnclave::generate(DOMAIN)?;
 let attestation_doc = SecureModule::global().raw_attest(
-    None::<Vec<u8>>,                       // user_data — left free for your protocol
+    None::<Vec<u8>>,                       // user_data
     None::<Vec<u8>>,                       // nonce
     Some(enclave.public_key_commitment()), // public_key
 )?;
 let enclave_public_key = enclave.public_key();
 
-// End consumer: `verifier` is the one built above. This single call verifies the document,
-// checks it commits to this key, and hands back the channel — the check cannot be skipped.
+// End consumer: establish the channel from the enclave's attested public key
 let (consumer, attestation) =
     ChannelConsumer::from_attestation(DOMAIN, &verifier, &attestation_doc, &enclave_public_key)?;
 let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;

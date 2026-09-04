@@ -12,10 +12,6 @@ use serde_bytes::ByteBuf;
 
 /// The digest algorithm used for the PCR values. **Mirrored**.
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
-#[expect(
-	clippy::upper_case_acronyms,
-	reason = "wire format: CBOR strings are uppercase"
-)]
 pub enum Digest {
 	/// SHA256
 	SHA256,
@@ -25,7 +21,7 @@ pub enum Digest {
 	SHA512,
 }
 
-/// A Nitro attestation document, as carried in the payload of the COSE Sign1 envelope. **Mirrored**.
+/// A Nitro attestation document. **Mirrored**.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct AttestationDoc {
 	/// Issuing NSM ID.
@@ -67,6 +63,7 @@ pub struct SecureModule {
 
 /// Errors that can occur when requesting an attestation document from the NSM.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AttestationError {
 	/// Failed to get attestation from NSM.
 	#[cfg(feature = "nsm")]
@@ -80,48 +77,33 @@ pub enum AttestationError {
 	Cose(String),
 }
 
-/// Parse a raw attestation document into an `AttestationDoc`.
-///
-/// This only decodes the document — it does **not** verify the COSE signature, the certificate
-/// chain, the PCR values or the timestamp. Use the `verify` module for that.
-///
-/// Only untagged `COSE_Sign1` is accepted, which is what the NSM emits; CBOR tag 18 is rejected.
-///
-/// # Errors
-/// Returns an error if the document cannot be decoded.
-pub fn parse_raw_attestation_doc(document: &[u8]) -> Result<AttestationDoc, AttestationError> {
-	parse_cose_attestation_doc(document).map(|(_, attestation_doc)| attestation_doc)
-}
+#[cfg(any(feature = "nsm", feature = "attestation"))]
+impl AttestationDoc {
+	/// Parses an attestation doc from raw bytes. Does **not** validate the signature.
+	///
+	/// # Errors
+	/// Errors if the document is invalid or cannot be parsed.
+	pub(crate) fn from_bytes(doc: &[u8]) -> Result<(Self, CoseSign1), AttestationError> {
+		let cose_document =
+			CoseSign1::from_slice(doc).map_err(|e| AttestationError::Cose(e.to_string()))?;
 
-/// Parse a raw attestation document, returning the COSE Sign1 envelope alongside the decoded
-/// payload. The envelope is what carries the signature, so verification needs both.
-///
-/// # Errors
-/// Returns an error if the document cannot be decoded.
-pub(crate) fn parse_cose_attestation_doc(
-	document: &[u8],
-) -> Result<(CoseSign1, AttestationDoc), AttestationError> {
-	let cose_document =
-		CoseSign1::from_slice(document).map_err(|e| AttestationError::Cose(e.to_string()))?;
+		let payload = cose_document
+			.payload
+			.as_ref()
+			.ok_or_else(|| AttestationError::Cose("missing payload in COSE Sign1".to_string()))?;
 
-	let payload = cose_document
-		.payload
-		.as_ref()
-		.ok_or_else(|| AttestationError::Cose("missing payload in COSE Sign1".to_string()))?;
+		let mut remaining = payload.as_slice();
+		let attestation_doc = ciborium::from_reader::<Self, _>(&mut remaining)
+			.map_err(|e| AttestationError::Encoding(e.to_string()))?;
+		if !remaining.is_empty() {
+			return Err(AttestationError::Encoding(format!(
+				"{} trailing bytes after the attestation document",
+				remaining.len()
+			)));
+		}
 
-	// `from_reader` stops at the end of the first CBOR item; anything after it would be accepted
-	// silently, leaving two decoders free to disagree on what the document says.
-	let mut remaining = payload.as_slice();
-	let attestation_doc = ciborium::from_reader::<AttestationDoc, _>(&mut remaining)
-		.map_err(|e| AttestationError::Encoding(e.to_string()))?;
-	if !remaining.is_empty() {
-		return Err(AttestationError::Encoding(format!(
-			"{} trailing bytes after the attestation document",
-			remaining.len()
-		)));
+		Ok((attestation_doc, cose_document))
 	}
-
-	Ok((cose_document, attestation_doc))
 }
 
 #[cfg(feature = "nsm")]
@@ -163,7 +145,7 @@ impl SecureModule {
 		}
 	}
 
-	/// Create an attestation document, and return it as a binary blob.
+	/// Create an [`AttestationDoc`], and return it as a binary blob without verifying.
 	///
 	/// # Errors
 	///
@@ -187,7 +169,7 @@ impl SecureModule {
 		}
 	}
 
-	/// Create an `AttestationDoc` and sign it with it's private key to ensure authenticity.
+	/// Create an [`AttestationDoc`] for the provided inputs.
 	///
 	/// # Errors
 	///
@@ -199,7 +181,8 @@ impl SecureModule {
 		public_key: Option<impl Into<Vec<u8>>>,
 	) -> Result<AttestationDoc, AttestationError> {
 		let document = self.raw_attest(user_data, nonce, public_key)?;
-		parse_raw_attestation_doc(&document)
+		let (doc, _sig) = AttestationDoc::from_bytes(&document)?; // signatature not verified here
+		Ok(doc)
 	}
 
 	/// Attempt to get the global NSM instance.
@@ -243,19 +226,13 @@ impl Drop for SecureModule {
 	}
 }
 
-/// Proves our mirrored document types still match `aws-nitro-enclaves-nsm-api`.
-///
-/// Nothing here runs — the value is that it stops compiling if AWS adds, removes, renames or
-/// retypes a field, or adds a `Digest` variant. `aws-nitro-enclaves-nsm-api` is a dev-dependency
-/// only, so this costs a client build nothing.
-#[cfg(test)]
+/// Ensures **mirrored** types match the upstream `aws_nitro_enclaves_nsm_api` crate.
+#[cfg(all(test, any(feature = "nsm", feature = "attestation")))]
 mod nsm_api_compat {
 	use aws_nitro_enclaves_nsm_api::api as upstream;
 
 	use super::{AttestationDoc, Digest};
 
-	/// Exhaustive destructuring: an added, removed or renamed field fails to compile, and the
-	/// struct literal fails if any field's type changed.
 	#[allow(dead_code, reason = "exists to be type-checked, not called")]
 	fn document_is_field_for_field_identical(doc: upstream::AttestationDoc) -> AttestationDoc {
 		let upstream::AttestationDoc {
@@ -283,7 +260,6 @@ mod nsm_api_compat {
 		}
 	}
 
-	/// Exhaustive match: a new upstream variant fails to compile.
 	const fn digest_variants_match(digest: upstream::Digest) -> Digest {
 		match digest {
 			upstream::Digest::SHA256 => Digest::SHA256,
@@ -292,11 +268,10 @@ mod nsm_api_compat {
 		}
 	}
 
-	/// Structure matching is not encoding matching, so decode the real document both ways.
 	#[test]
 	fn the_two_types_decode_a_real_document_identically() {
-		let payload = super::parse_cose_attestation_doc(super::tests::MOCK_DOC)
-			.map(|(envelope, _)| envelope.payload.expect("fixture has a payload"))
+		let payload = super::AttestationDoc::from_bytes(super::tests::MOCK_DOC)
+			.map(|(_, envelope)| envelope.payload.expect("fixture has a payload"))
 			.expect("fixture parses");
 
 		let ours: AttestationDoc = ciborium::from_reader(payload.as_slice()).expect("ours decodes");
@@ -307,7 +282,7 @@ mod nsm_api_compat {
 	}
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "nsm", feature = "attestation")))]
 mod tests {
 	use serde_bytes::ByteBuf;
 
@@ -318,7 +293,7 @@ mod tests {
 	/// The `mock-attestation-doc` is generated from a test Nitro enclave with some values sanitized.
 	#[test]
 	fn test_parse_raw_attestation_doc() {
-		let document = parse_raw_attestation_doc(MOCK_DOC).unwrap();
+		let (document, _sig) = AttestationDoc::from_bytes(MOCK_DOC).unwrap();
 
 		assert_eq!(document.module_id, "test");
 		assert_eq!(document.timestamp, 1_748_469_829_761);
@@ -329,7 +304,7 @@ mod tests {
 
 	#[test]
 	fn trailing_bytes_after_the_payload_are_rejected() {
-		let (envelope, _) = parse_cose_attestation_doc(MOCK_DOC).unwrap();
+		let (_, envelope) = AttestationDoc::from_bytes(MOCK_DOC).unwrap();
 		let mut payload = envelope.payload.clone().unwrap();
 		payload.push(0xf6);
 
@@ -341,7 +316,7 @@ mod tests {
 		.unwrap();
 
 		assert!(matches!(
-			parse_raw_attestation_doc(&tampered),
+			AttestationDoc::from_bytes(&tampered),
 			Err(AttestationError::Encoding(_))
 		));
 	}
@@ -352,7 +327,7 @@ mod tests {
 		tagged.extend_from_slice(MOCK_DOC);
 
 		assert!(matches!(
-			parse_raw_attestation_doc(&tagged),
+			AttestationDoc::from_bytes(&tagged),
 			Err(AttestationError::Cose(_))
 		));
 	}

@@ -40,6 +40,7 @@ const RESPONSE: u8 = 1;
 
 /// Why a channel operation did not complete.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ChannelError {
 	/// The request opened, but was too short to carry a response key.
 	#[error("ChannelError::MissingResponseKey")]
