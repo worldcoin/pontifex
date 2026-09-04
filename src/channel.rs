@@ -12,12 +12,19 @@
 //! 2. The response from the enclave is **NOT** attested. Quantum boxes are anonymous, anyone
 //!   could have encrypted a response to it with its public key. If the use case requires trusting
 //!   the enclave response, add an additional attestation or signature mechanism.
-//! 3. This module currently does **NOT** verify an attestation on the enclave's public key.
+//! 3. Build the consumer with [`ChannelConsumer::from_attestation`], so the key comes from a
+//!   verified attestation. [`ChannelConsumer::from_unverified_public_key`] skips that check.
 //! 4. This system does not offer direct replay protection for requests (e.g. a malicious host could inject
 //!   the same ciphertext multiple times). Add a separate mechanism if your trust assumptions require this.
+//! 5. The enclave attests the key commitment in the document's `public_key` field, `user_data` and `nonce`
+//!   can be used to carry additional data.
 
 use quantum_box::{PublicKey, SecretKey};
+use sha2::{Digest as _, Sha256};
 use zeroize::ZeroizeOnDrop;
+
+#[cfg(feature = "attestation")]
+use crate::attestation::{self, VerifiedAttestation, Verifier};
 
 pub use quantum_box::Error as SealedBoxError;
 pub use zeroize::Zeroizing;
@@ -25,12 +32,15 @@ pub use zeroize::Zeroizing;
 /// Length of an X-Wing encapsulation key: ML-KEM-768 (1184) plus X25519 (32).
 const RESPONSE_KEY_LEN: usize = 1216;
 
-// Bound into the `info` so one key is never used for both directions.
+/// Domain separator for [`public_key_commitment`].
+const COMMITMENT_DOMAIN: &[u8] = b"pontifex/public-key-commitment/v1\0";
+
 const REQUEST: u8 = 0;
 const RESPONSE: u8 = 1;
 
 /// Why a channel operation did not complete.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ChannelError {
 	/// The request opened, but was too short to carry a response key.
 	#[error("ChannelError::MissingResponseKey")]
@@ -41,6 +51,18 @@ pub enum ChannelError {
 	/// A key, a seal, or an unseal failed.
 	#[error("ChannelError::SealedBox: {0}")]
 	SealedBox(#[from] SealedBoxError),
+	/// Unable to verify the enclave's attestation.
+	#[cfg(feature = "attestation")]
+	#[error("ChannelError::Attestation: {0}")]
+	Attestation(#[from] attestation::Error),
+	/// Key commitment in attestation does not match the provided public key.
+	#[cfg(feature = "attestation")]
+	#[error("ChannelError::KeyCommitmentMismatch")]
+	KeyCommitmentMismatch,
+	/// The enclave's attestation does not contain a committed public key.
+	#[cfg(feature = "attestation")]
+	#[error("ChannelError::PublicKeyEmpty")]
+	EmptyPublicKey,
 }
 
 /// The protocol name bound into every seal on a channel.
@@ -99,6 +121,12 @@ impl ChannelEnclave {
 		self.secret_key.public_key().to_bytes()
 	}
 
+	/// Commitment to [`Self::public_key`] to be attested.
+	#[must_use]
+	pub fn public_key_commitment(&self) -> [u8; 32] {
+		public_key_commitment(&self.public_key())
+	}
+
 	/// Opens a sealed request, returning the plaintext and the sealer for its one response.
 	///
 	/// # Errors
@@ -127,6 +155,19 @@ impl ChannelEnclave {
 			},
 		))
 	}
+}
+
+/// Commitment to a `public_key`.
+///
+/// # Rationale
+/// A commitment is used instead of raw key because X-Wing's pk exceeds max size.
+#[must_use]
+pub fn public_key_commitment(public_key: &[u8]) -> [u8; 32] {
+	Sha256::new()
+		.chain_update(COMMITMENT_DOMAIN)
+		.chain_update(public_key)
+		.finalize()
+		.into()
 }
 
 /// Seals a one-time response back to the consumer.
@@ -179,15 +220,54 @@ impl std::fmt::Debug for ChannelConsumer {
 }
 
 impl ChannelConsumer {
-	/// Builds a consumer for the public key a verified attestation carried.
+	/// Initializes a channel from an enclave's public key and its attestation. Verifies the public
+	/// key is properly attested by the enclave.
 	///
-	/// This does **not** verify that attestation. Verify it first — otherwise the key may be the
-	/// untrusted parent's own, and it will read every request.
+	/// # Errors
+	///
+	/// Fails if the attestation does not verify, if it does not commit to `enclave_public_key`,
+	/// or if that key is not a valid X-Wing encapsulation key.
+	#[cfg(feature = "attestation")]
+	pub fn from_attestation(
+		domain: ChannelDomain,
+		verifier: &Verifier,
+		attestation_doc: &[u8],
+		enclave_public_key: &[u8],
+	) -> Result<(Self, VerifiedAttestation), ChannelError> {
+		let attestation = verifier.verify_attestation_document(attestation_doc)?;
+
+		let expected = public_key_commitment(enclave_public_key);
+		let attested = attestation.document().public_key.as_ref();
+
+		if let Some(attested) = attested {
+			if attested.as_slice() != expected {
+				return Err(ChannelError::KeyCommitmentMismatch);
+			}
+		} else {
+			return Err(ChannelError::EmptyPublicKey);
+		}
+
+		let consumer = Self {
+			domain,
+			enclave_public_key: PublicKey::from_bytes(enclave_public_key)?,
+		};
+
+		Ok((consumer, attestation))
+	}
+
+	/// Builds a consumer for a provided public key.
+	///
+	/// # Warning
+	/// This method will not verify the public key is attested. Most use cases
+	/// should use [`Self::from_attestation`].
 	///
 	/// # Errors
 	///
 	/// Fails if `enclave_public_key` is not a valid X-Wing encapsulation key.
-	pub fn new(domain: ChannelDomain, enclave_public_key: &[u8]) -> Result<Self, ChannelError> {
+	pub fn from_unverified_public_key(
+		domain: ChannelDomain,
+		enclave_public_key: &[u8],
+	) -> Result<Self, ChannelError> {
 		Ok(Self {
 			domain,
 			enclave_public_key: PublicKey::from_bytes(enclave_public_key)?,
@@ -231,7 +311,7 @@ impl ChannelConsumer {
 /// # use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
 /// # const DOMAIN: ChannelDomain = ChannelDomain::new("pontifex/doc");
 /// # let enclave = ChannelEnclave::generate(DOMAIN)?;
-/// # let consumer = ChannelConsumer::new(DOMAIN, &enclave.public_key())?;
+/// # let consumer = ChannelConsumer::from_unverified_public_key(DOMAIN, &enclave.public_key())?;
 /// # let (request, opener) = consumer.seal_to_enclave(b"inputs")?;
 /// # let (_, sealer) = enclave.open(&request)?;
 /// # let response = sealer.seal(b"result")?;
@@ -265,9 +345,12 @@ impl ResponseOpener {
 mod tests {
 	use super::{
 		ChannelConsumer, ChannelDomain, ChannelEnclave, ChannelError, REQUEST, RESPONSE,
-		RESPONSE_KEY_LEN, ResponseOpener, SealedBoxError,
+		RESPONSE_KEY_LEN, ResponseOpener, SealedBoxError, public_key_commitment,
 	};
 	use quantum_box::{PublicKey, SecretKey};
+
+	#[cfg(feature = "attestation")]
+	use crate::test_fixtures::{real_attestation_bytes, real_attestation_verifier};
 
 	const TEST_DOMAIN: ChannelDomain = ChannelDomain::new("pontifex/test");
 
@@ -276,7 +359,8 @@ mod tests {
 	}
 
 	fn consumer_for(enclave: &ChannelEnclave, domain: ChannelDomain) -> ChannelConsumer {
-		ChannelConsumer::new(domain, &enclave.public_key()).expect("attested key parses")
+		ChannelConsumer::from_unverified_public_key(domain, &enclave.public_key())
+			.expect("attested key parses")
 	}
 
 	fn seal(consumer: &ChannelConsumer, plaintext: &[u8]) -> (Vec<u8>, ResponseOpener) {
@@ -372,7 +456,7 @@ mod tests {
 	#[test]
 	fn rejects_an_unparseable_key() {
 		assert_eq!(
-			ChannelConsumer::new(TEST_DOMAIN, &[0u8; 32]).err(),
+			ChannelConsumer::from_unverified_public_key(TEST_DOMAIN, &[0u8; 32]).err(),
 			Some(ChannelError::SealedBox(SealedBoxError::KeyFormat))
 		);
 	}
@@ -541,5 +625,62 @@ mod tests {
 			r#"ChannelConsumer { domain: ChannelDomain { name: "pontifex/test" }, .. }"#
 		);
 		assert_eq!(format!("{sealer:?}"), "ResponseSealer { .. }");
+	}
+
+	#[cfg(feature = "attestation")]
+	#[test]
+	fn from_attestation_rejects_a_tampered_document() {
+		let mut doc = real_attestation_bytes();
+		*doc.last_mut().expect("non-empty") ^= 0x01;
+
+		let err = ChannelConsumer::from_attestation(
+			TEST_DOMAIN,
+			&real_attestation_verifier(),
+			&doc,
+			&enclave().public_key(),
+		)
+		.expect_err("a tampered attestation must not yield a consumer");
+
+		assert!(matches!(err, ChannelError::Attestation(_)), "got {err:?}");
+	}
+
+	#[cfg(feature = "attestation")]
+	#[test]
+	fn from_attestation_rejects_a_key_the_document_does_not_commit_to() {
+		let err = ChannelConsumer::from_attestation(
+			TEST_DOMAIN,
+			&real_attestation_verifier(),
+			&real_attestation_bytes(),
+			&enclave().public_key(), // different public key
+		)
+		.expect_err("the fixture does not commit to this key");
+
+		assert_eq!(err, ChannelError::KeyCommitmentMismatch);
+	}
+
+	#[test]
+	fn fixture_test_enclave_commitment_matches_its_own_public_key() {
+		let enclave = enclave();
+
+		assert_eq!(
+			enclave.public_key_commitment(),
+			public_key_commitment(&enclave.public_key())
+		);
+	}
+
+	#[test]
+	fn commitment_is_stable() {
+		assert_eq!(
+			public_key_commitment(b"key"),
+			hex_literal::hex!("77634addf9ae031e3d621410d643d1f13b7d426876627b53d89ea0f7bba71cfb")
+		);
+	}
+
+	#[test]
+	fn distinct_keys_commit_differently() {
+		assert_ne!(
+			public_key_commitment(b"key-a"),
+			public_key_commitment(b"key-b")
+		);
 	}
 }

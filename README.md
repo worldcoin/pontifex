@@ -70,32 +70,57 @@ let connection = ConnectionDetails::new(ENCLAVE_CID, ENCLAVE_PORT);
 let response: HealthStatus = send(connection, &HealthCheck).await?;
 ```
 
+### Attestation Verification
+
+The `attestation` feature allows a consumer to check an attestation issued by the NSM of a Nitro Enclave. It is what the `channel` feature uses underneath to verify public keys are attested but using this module directly enables a consumer to receive arbitrarily attested data.
+
+```rust,ignore
+use pontifex::attestation::{PcrConfig, Verifier};
+use std::time::Duration;
+
+// Verification succeeds if *any* of the allowed configurations matches, which allows
+// supporting multiple enclave software versions at once.
+let verifier = Verifier::new(
+    vec![PcrConfig::new(pcr0).with_pcr(1, pcr1).with_pcr(2, pcr2)],
+    Duration::from_secs(3 * 60 * 60),
+);
+
+let attestation = verifier.verify_attestation_document(&attestation_doc)?;
+println!("enclave module: {}", attestation.document().module_id);
+```
+
 ### Sealed Channel
 
 The `channel` feature allows establishing an end-to-end encrypted channel, so a client can send data directly to the enclave without anyone else (chiefly the untrusted parent host) being able to read it. Every message is a [`quantum-box`](https://docs.rs/quantum-box) sealed box over X-Wing, a hybrid post-quantum KEM.
 
-The enclave usually generates a keypair per boot and attests its public key. The client then verifies the attestation and seals to the key it carried. Each request mints its own response key to receive an encrypted response.
+The enclave usually generates a keypair per boot and attests a commitment to its public key. The client verifies the attestation against that key before sealing to it. Each request mints its own response key to receive an encrypted response.
 
 The default flow looks as follows:
 
 ```rust,ignore
-use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
+use pontifex::{SecureModule, channel::{ChannelConsumer, ChannelDomain, ChannelEnclave}};
 
-// The name is the only lever for a breaking wire change, so carry a version in it.
 const DOMAIN: ChannelDomain = ChannelDomain::new("my-protocol/match_v1");
 
-// Enclave (usually once per boot): Attest `enclave.public_key()`, then hand those bytes out.
+// Enclave (usually once per boot): generate a channel key and attest the public key used for it.
 let enclave = ChannelEnclave::generate(DOMAIN)?;
+let attestation_doc = SecureModule::global().raw_attest(
+    None::<Vec<u8>>,                       // user_data
+    None::<Vec<u8>>,                       // nonce
+    Some(enclave.public_key_commitment()), // public_key
+)?;
+let enclave_public_key = enclave.public_key();
 
-// End consumer: uses an *attested* public key. NOTE: attestation is currently not verified here.
-let consumer = ChannelConsumer::new(DOMAIN, &attested_public_key)?;
+// End consumer: establish the channel from the enclave's attested public key
+let (consumer, attestation) =
+    ChannelConsumer::from_attestation(DOMAIN, &verifier, &attestation_doc, &enclave_public_key)?;
 let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;
 
 // Enclave: open the request, seal the one reply it belongs to.
 let (plaintext, sealer) = enclave.open(&sealed_request)?;
 let sealed_response = sealer.seal(b"result")?;
 
-// End consumer: only this opener can open that response.
+// End consumer: open the enclave's response.
 let result = opener.open_from_enclave(&sealed_response)?;
 ```
 

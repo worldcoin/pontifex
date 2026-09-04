@@ -1,16 +1,52 @@
-pub use aws_nitro_enclaves_nsm_api::api::{AttestationDoc, Digest, ErrorCode, Request, Response};
+//! Enables low-level interfacing with the Nitro Secure Module (NSM).
+//!
+//! Some types are "*mirrored*" from `aws-nitro-enclaves-nsm-api` crate to avoid pulling in `libc` dep
+//! and unmaintained `serde_cbor`. The [`nsm_api_compat`] module ensures no-divergence.
+#[cfg(feature = "nsm")]
+pub use aws_nitro_enclaves_nsm_api::api::{ErrorCode, Request, Response};
+use std::collections::BTreeMap;
+
+use coset::{CborSerializable, CoseSign1};
+use serde::{Deserialize, Serialize};
+use serde_bytes::ByteBuf;
+
+/// The digest algorithm used for the PCR values. **Mirrored**.
+#[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
+pub enum Digest {
+	/// SHA256
+	SHA256,
+	/// SHA384
+	SHA384,
+	/// SHA512
+	SHA512,
+}
+
+/// A Nitro attestation document. **Mirrored**.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AttestationDoc {
+	/// Issuing NSM ID.
+	pub module_id: String,
+	/// The digest function used for the PCR values.
+	pub digest: Digest,
+	/// Creation time, in milliseconds since the Unix epoch.
+	pub timestamp: u64,
+	/// Every PCR locked at the moment the document was generated.
+	pub pcrs: BTreeMap<usize, ByteBuf>,
+	/// The infrastructure certificate that signed the document, DER encoded.
+	pub certificate: ByteBuf,
+	/// Issuing CA bundle for the infrastructure certificate.
+	pub cabundle: Vec<ByteBuf>,
+	/// Representation of a public key used to encrypt data to the enclave.
+	pub public_key: Option<ByteBuf>,
+	/// Additional signed user data, as defined by the protocol.
+	pub user_data: Option<ByteBuf>,
+	/// An optional consumer-provided nonce, proving the document was minted for this request.
+	pub nonce: Option<ByteBuf>,
+}
 
 #[cfg(feature = "nsm")]
 use {
-	aws_nitro_enclaves_cose::{
-		CoseSign1,
-		crypto::{Hash, MessageDigest},
-		error::CoseError,
-	},
-	aws_nitro_enclaves_nsm_api::api::Error,
 	aws_nitro_enclaves_nsm_api::driver::{nsm_exit, nsm_init, nsm_process_request},
-	serde_bytes::ByteBuf,
-	sha2::{Digest as _, Sha256, Sha384, Sha512},
 	std::{io, os::fd::RawFd},
 	tokio::sync::OnceCell,
 };
@@ -27,29 +63,46 @@ pub struct SecureModule {
 
 /// Errors that can occur when requesting an attestation document from the NSM.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AttestationError {
 	/// Failed to get attestation from NSM.
+	#[cfg(feature = "nsm")]
 	#[error("AttestationError::Nsm: {0:?}")]
 	Nsm(ErrorCode),
-	/// Failed to decode attestation document.
+	/// Failed to decode the CBOR payload of an attestation document.
 	#[error("AttestationError::Encoding: {0}")]
-	Encoding(serde_cbor::error::Error),
-	/// Failed to decode attestation document.
+	Encoding(String),
+	/// Failed to decode the COSE Sign1 envelope of an attestation document.
 	#[error("AttestationError::Cose: {0}")]
-	Cose(aws_nitro_enclaves_cose::error::CoseError),
+	Cose(String),
 }
 
-#[cfg(feature = "nsm")]
-struct Sha2Hasher;
+#[cfg(any(feature = "nsm", feature = "attestation"))]
+impl AttestationDoc {
+	/// Parses an attestation doc from raw bytes. Does **not** validate the signature.
+	///
+	/// # Errors
+	/// Errors if the document is invalid or cannot be parsed.
+	pub(crate) fn from_bytes(doc: &[u8]) -> Result<(Self, CoseSign1), AttestationError> {
+		let cose_document =
+			CoseSign1::from_slice(doc).map_err(|e| AttestationError::Cose(e.to_string()))?;
 
-#[cfg(feature = "nsm")]
-impl Hash for Sha2Hasher {
-	fn hash(digest: MessageDigest, data: &[u8]) -> Result<Vec<u8>, CoseError> {
-		Ok(match digest {
-			MessageDigest::Sha256 => Sha256::digest(data).to_vec(),
-			MessageDigest::Sha384 => Sha384::digest(data).to_vec(),
-			MessageDigest::Sha512 => Sha512::digest(data).to_vec(),
-		})
+		let payload = cose_document
+			.payload
+			.as_ref()
+			.ok_or_else(|| AttestationError::Cose("missing payload in COSE Sign1".to_string()))?;
+
+		let mut remaining = payload.as_slice();
+		let attestation_doc = ciborium::from_reader::<Self, _>(&mut remaining)
+			.map_err(|e| AttestationError::Encoding(e.to_string()))?;
+		if !remaining.is_empty() {
+			return Err(AttestationError::Encoding(format!(
+				"{} trailing bytes after the attestation document",
+				remaining.len()
+			)));
+		}
+
+		Ok((attestation_doc, cose_document))
 	}
 }
 
@@ -92,7 +145,7 @@ impl SecureModule {
 		}
 	}
 
-	/// Create an attestation document, and return it as a binary blob.
+	/// Create an [`AttestationDoc`], and return it as a binary blob without verifying.
 	///
 	/// # Errors
 	///
@@ -116,7 +169,7 @@ impl SecureModule {
 		}
 	}
 
-	/// Create an `AttestationDoc` and sign it with it's private key to ensure authenticity.
+	/// Create an [`AttestationDoc`] for the provided inputs.
 	///
 	/// # Errors
 	///
@@ -128,26 +181,8 @@ impl SecureModule {
 		public_key: Option<impl Into<Vec<u8>>>,
 	) -> Result<AttestationDoc, AttestationError> {
 		let document = self.raw_attest(user_data, nonce, public_key)?;
-		Self::parse_raw_attestation_doc(&document)
-	}
-
-	/// Parse a raw attestation document into an `AttestationDoc`.
-	///
-	/// # Errors
-	/// Returns an error if the document cannot be decoded.
-	pub fn parse_raw_attestation_doc(document: &[u8]) -> Result<AttestationDoc, AttestationError> {
-		let cose_document = CoseSign1::from_bytes(document).map_err(AttestationError::Cose)?;
-
-		let cbor_attestation_doc = cose_document
-			.get_payload::<Sha2Hasher>(None)
-			.map_err(AttestationError::Cose)?;
-
-		AttestationDoc::from_binary(&cbor_attestation_doc).map_err(|e| match e {
-			Error::Cbor(e) => AttestationError::Encoding(e),
-			Error::Io(_) => {
-				unreachable!("AttestationDoc::from_binary should not return an IO error")
-			},
-		})
+		let (doc, _sig) = AttestationDoc::from_bytes(&document)?; // signature not verified here
+		Ok(doc)
 	}
 
 	/// Attempt to get the global NSM instance.
@@ -191,22 +226,109 @@ impl Drop for SecureModule {
 	}
 }
 
-#[cfg(all(test, feature = "nsm"))]
+/// Ensures **mirrored** types match the upstream `aws_nitro_enclaves_nsm_api` crate.
+#[cfg(all(test, any(feature = "nsm", feature = "attestation")))]
+mod nsm_api_compat {
+	use aws_nitro_enclaves_nsm_api::api as upstream;
+
+	use super::{AttestationDoc, Digest};
+
+	#[allow(dead_code, reason = "exists to be type-checked, not called")]
+	fn document_is_field_for_field_identical(doc: upstream::AttestationDoc) -> AttestationDoc {
+		let upstream::AttestationDoc {
+			module_id,
+			digest,
+			timestamp,
+			pcrs,
+			certificate,
+			cabundle,
+			public_key,
+			user_data,
+			nonce,
+		} = doc;
+
+		AttestationDoc {
+			module_id,
+			digest: digest_variants_match(digest),
+			timestamp,
+			pcrs,
+			certificate,
+			cabundle,
+			public_key,
+			user_data,
+			nonce,
+		}
+	}
+
+	const fn digest_variants_match(digest: upstream::Digest) -> Digest {
+		match digest {
+			upstream::Digest::SHA256 => Digest::SHA256,
+			upstream::Digest::SHA384 => Digest::SHA384,
+			upstream::Digest::SHA512 => Digest::SHA512,
+		}
+	}
+
+	#[test]
+	fn the_two_types_decode_a_real_document_identically() {
+		let payload = super::AttestationDoc::from_bytes(super::tests::MOCK_DOC)
+			.map(|(_, envelope)| envelope.payload.expect("fixture has a payload"))
+			.expect("fixture parses");
+
+		let ours: AttestationDoc = ciborium::from_reader(payload.as_slice()).expect("ours decodes");
+		let theirs: upstream::AttestationDoc =
+			ciborium::from_reader(payload.as_slice()).expect("upstream decodes");
+
+		assert_eq!(ours, document_is_field_for_field_identical(theirs));
+	}
+}
+
+#[cfg(all(test, any(feature = "nsm", feature = "attestation")))]
 mod tests {
+	use serde_bytes::ByteBuf;
+
 	use super::*;
 
-	/// Takes a COSE-signed attestation document and asserts that it can be properly parsed into an `AttestationDoc`.
-	///
+	pub(super) const MOCK_DOC: &[u8] = include_bytes!("../tests/mock-attestation-doc.cose");
+
 	/// The `mock-attestation-doc` is generated from a test Nitro enclave with some values sanitized.
 	#[test]
 	fn test_parse_raw_attestation_doc() {
-		let document = include_bytes!("../tests/mock-attestation-doc.cose");
-		let document: AttestationDoc = SecureModule::parse_raw_attestation_doc(document).unwrap();
+		let (document, _sig) = AttestationDoc::from_bytes(MOCK_DOC).unwrap();
 
 		assert_eq!(document.module_id, "test");
 		assert_eq!(document.timestamp, 1_748_469_829_761);
 		assert_eq!(document.certificate, ByteBuf::from(vec![3, 4]));
 		assert_eq!(document.nonce, Some(ByteBuf::from(b"some nonce")));
 		assert_eq!(document.user_data, Some(ByteBuf::from(b"hello, world!")));
+	}
+
+	#[test]
+	fn trailing_bytes_after_the_payload_are_rejected() {
+		let (_, envelope) = AttestationDoc::from_bytes(MOCK_DOC).unwrap();
+		let mut payload = envelope.payload.clone().unwrap();
+		payload.push(0xf6);
+
+		let tampered = CoseSign1 {
+			payload: Some(payload),
+			..envelope
+		}
+		.to_vec()
+		.unwrap();
+
+		assert!(matches!(
+			AttestationDoc::from_bytes(&tampered),
+			Err(AttestationError::Encoding(_))
+		));
+	}
+
+	#[test]
+	fn a_tagged_cose_sign1_is_rejected() {
+		let mut tagged = vec![0xd2];
+		tagged.extend_from_slice(MOCK_DOC);
+
+		assert!(matches!(
+			AttestationDoc::from_bytes(&tagged),
+			Err(AttestationError::Cose(_))
+		));
 	}
 }

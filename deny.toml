@@ -1,5 +1,4 @@
 [graph]
-# Cargo deny will check dependencies via `--all-features`
 all-features = true
 
 [sources]
@@ -9,34 +8,26 @@ unknown-registry = "deny"
 deny = [
     { name = "openssl-sys", reason = "increases complexity for foreign binding compilation and bundle size" },
     { name = "openssl", reason = "increases complexity for foreign binding compilation and bundle size" },
-    { name = "semaphore-rs", reason = "bedrock should not include World ID dependencies" },
-    { name = "walletkit-core", reason = "bedrock should not include World ID dependencies" }
 ]
 
 [licenses]
 version = 2
-# We want really high confidence when inferring licenses from text
 confidence-threshold = 1.0
-
-# List of explicitly allowed licenses
-# See https://spdx.org/licenses/ for list of possible licenses
 allow = [
-    "0BSD",
     "Apache-2.0",
-    # "BSD-2-Clause",
-    # "BSD-2-Clause-Patent",
     "BSD-3-Clause",
-    # "BSL-1.0",
-    # "CC0-1.0",
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
     "Unicode-3.0",
     "Unlicense",
-    "Zlib",
 ]
 
-# Ignore unmaintained required crates warning
+[[licenses.clarify]]
+crate = "webpki" # `webpki` is ISC but missing the field
+expression = "ISC"
+license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
+
 [advisories]
 ignore = [
     "RUSTSEC-2021-0127", # Unmaintained `serde_cbor` (requires upstream update, see https://github.com/aws/aws-nitro-enclaves-nsm-api/pull/56)

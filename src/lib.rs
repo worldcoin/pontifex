@@ -77,13 +77,21 @@ pub mod server;
 #[cfg(feature = "server")]
 pub use server::Router;
 
-/// Enables low-level interfacing with the Nitro Secure Module (NSM).
 #[cfg(any(feature = "nsm", feature = "nsm-types"))]
 pub mod nsm;
 #[cfg(feature = "nsm")]
 pub use nsm::SecureModule;
 #[cfg(feature = "nsm-types")]
 pub use nsm::{AttestationDoc, AttestationError};
+
+#[cfg(all(test, feature = "attestation"))]
+mod test_fixtures;
+
+/// Verification of Nitro Enclave attestation documents.
+#[cfg(feature = "attestation")]
+pub mod attestation;
+#[cfg(feature = "attestation")]
+pub use attestation::{PcrConfig, PcrMeasurement, Verifier};
 
 /// KMS functionality.
 #[cfg(feature = "kms")]
