@@ -105,6 +105,14 @@ impl ChannelEnclave {
 		self.secret_key.public_key().to_bytes()
 	}
 
+	/// The commitment to [`Self::public_key`] to attest in the document's `user_data`.
+	///
+	/// The key itself does not fit the NSM's 1024-byte `public_key` field; this does.
+	#[must_use]
+	pub fn public_key_commitment(&self) -> [u8; 32] {
+		crate::public_key_commitment(&self.public_key())
+	}
+
 	/// Opens a sealed request, returning the plaintext and the sealer for its one response.
 	///
 	/// # Errors
@@ -185,24 +193,29 @@ impl std::fmt::Debug for ChannelConsumer {
 }
 
 impl ChannelConsumer {
-	/// Verifies `attestation_doc` and builds a consumer for the public key it carries.
+	/// Verifies `attestation_doc`, checks that it commits to `enclave_public_key`, and builds a
+	/// consumer sealing to that key.
 	///
-	/// This is the constructor to reach for: the key is only trusted because the attestation
-	/// proves the enclave generated it.
+	/// This is the constructor to reach for. The key is too large for the attestation document's
+	/// `public_key` field, so the enclave attests
+	/// [`ChannelEnclave::public_key_commitment`] in `user_data` and returns the key alongside the
+	/// document; verifying the two together is what makes the key trustworthy.
 	///
 	/// # Errors
 	///
-	/// Fails if the attestation does not verify, or if the key it carries is not a valid X-Wing
-	/// encapsulation key.
+	/// Fails if the attestation does not verify, if it does not commit to `enclave_public_key`,
+	/// or if that key is not a valid X-Wing encapsulation key.
 	pub fn from_attestation(
 		domain: ChannelDomain,
 		verifier: &EnclaveAttestationVerifier,
 		attestation_doc: &[u8],
+		enclave_public_key: &[u8],
 	) -> Result<(Self, VerifiedAttestation), ChannelError> {
-		let attestation = verifier.verify_attestation_document(attestation_doc)?;
+		let attestation = verifier
+			.verify_attestation_document_with_key_commitment(attestation_doc, enclave_public_key)?;
 		let consumer = Self {
 			domain,
-			enclave_public_key: PublicKey::from_bytes(&attestation.enclave_public_key)?,
+			enclave_public_key: PublicKey::from_bytes(enclave_public_key)?,
 		};
 
 		Ok((consumer, attestation))
@@ -301,7 +314,10 @@ mod tests {
 	};
 	use quantum_box::{PublicKey, SecretKey};
 
-	use crate::test_support::{real_attestation_bytes, real_attestation_verifier};
+	use crate::{
+		test_support::{real_attestation_bytes, real_attestation_verifier},
+		verify::EnclaveAttestationError,
+	};
 
 	const TEST_DOMAIN: ChannelDomain = ChannelDomain::new("pontifex/test");
 
@@ -583,25 +599,54 @@ mod tests {
 		let mut doc = real_attestation_bytes();
 		*doc.last_mut().expect("non-empty") ^= 0x01;
 
-		let err =
-			ChannelConsumer::from_attestation(TEST_DOMAIN, &real_attestation_verifier(), &doc)
-				.expect_err("a tampered attestation must not yield a consumer");
+		let err = ChannelConsumer::from_attestation(
+			TEST_DOMAIN,
+			&real_attestation_verifier(),
+			&doc,
+			&enclave().public_key(),
+		)
+		.expect_err("a tampered attestation must not yield a consumer");
 
 		assert!(matches!(err, ChannelError::Attestation(_)), "got {err:?}");
 	}
 
-	/// Proves verification runs before the key is parsed. It does not prove the key came from the
-	/// attestation rather than elsewhere in the document, and the success path stays uncovered:
-	/// the fixture attests a 32-byte key, not a 1216-byte X-Wing one.
+	/// The fixture's `user_data` is empty, so it commits to no key at all — which is exactly what
+	/// an attacker replaying a genuine document alongside their own key would present.
 	#[test]
-	fn from_attestation_verifies_before_parsing_the_key() {
+	fn from_attestation_rejects_a_key_the_document_does_not_commit_to() {
 		let err = ChannelConsumer::from_attestation(
 			TEST_DOMAIN,
 			&real_attestation_verifier(),
 			&real_attestation_bytes(),
+			&enclave().public_key(),
 		)
-		.expect_err("the fixture key is not a valid X-Wing key");
+		.expect_err("the fixture does not commit to this key");
 
-		assert_eq!(err, ChannelError::SealedBox(SealedBoxError::KeyFormat));
+		assert_eq!(
+			err,
+			ChannelError::Attestation(EnclaveAttestationError::KeyCommitmentMismatch)
+		);
+	}
+
+	/// What the enclave attests must be the commitment to what the consumer seals to, or the two
+	/// sides silently disagree and every channel fails closed at the verifier.
+	#[test]
+	fn the_enclave_commitment_matches_its_own_public_key() {
+		let enclave = enclave();
+
+		assert_eq!(
+			enclave.public_key_commitment(),
+			crate::public_key_commitment(&enclave.public_key())
+		);
+	}
+
+	/// The X-Wing key is the reason the commitment exists: it does not fit the NSM's 1024-byte
+	/// `public_key` field, while the commitment always does.
+	#[test]
+	fn the_commitment_fits_the_nsm_public_key_field() {
+		const NSM_PUBLIC_KEY_LIMIT: usize = 1024;
+
+		assert!(enclave().public_key().len() > NSM_PUBLIC_KEY_LIMIT);
+		assert!(enclave().public_key_commitment().len() <= NSM_PUBLIC_KEY_LIMIT);
 	}
 }

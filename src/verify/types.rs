@@ -42,9 +42,9 @@ pub enum EnclaveAttestationError {
 	#[error("Invalid timestamp: {0}")]
 	AttestationInvalidTimestamp(String),
 
-	/// Invalid enclave public key
-	#[error("Invalid enclave public key: {0}")]
-	InvalidEnclavePublicKey(String),
+	/// The signed `user_data` is missing, or does not commit to the supplied public key
+	#[error("Attestation user_data does not commit to the supplied public key")]
+	KeyCommitmentMismatch,
 }
 
 /// Verified attestation data from the enclave.
@@ -53,8 +53,9 @@ pub enum EnclaveAttestationError {
 /// decoded from a request body would claim a verification that never happened.
 #[derive(Debug, Clone, Serialize)]
 pub struct VerifiedAttestation {
-	/// The public key the enclave attested, as raw bytes
-	pub enclave_public_key: Vec<u8>,
+	/// The public key the enclave attested, if it carried one. Documents that bind a key by
+	/// commitment instead leave this empty.
+	pub enclave_public_key: Option<Vec<u8>>,
 
 	/// The timestamp of the attestation
 	pub timestamp: u64,
@@ -71,14 +72,14 @@ impl VerifiedAttestation {
 	/// Creates a new `VerifiedAttestation`
 	///
 	/// # Arguments
-	/// * `enclave_public_key` - The public key the enclave attested, as raw bytes
+	/// * `enclave_public_key` - The public key the enclave attested, if any
 	/// * `timestamp` - The timestamp of the attestation
 	/// * `module_id` - The module ID of the enclave
 	/// * `nonce` - The signed nonce, if any
 	/// * `user_data` - The signed user data, if any
 	#[must_use]
 	pub const fn new(
-		enclave_public_key: Vec<u8>,
+		enclave_public_key: Option<Vec<u8>>,
 		timestamp: u64,
 		module_id: String,
 		nonce: Option<Vec<u8>>,

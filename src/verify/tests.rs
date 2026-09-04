@@ -21,7 +21,10 @@ fn test_real_attestation_document() {
 		.verify_attestation_document(&real_attestation_bytes())
 		.expect("attestation verification failed");
 
-	assert_eq!(verified.enclave_public_key, ATTESTED_PUBLIC_KEY);
+	assert_eq!(
+		verified.enclave_public_key.as_deref(),
+		Some(ATTESTED_PUBLIC_KEY.as_slice())
+	);
 	assert_eq!(
 		verified.module_id,
 		"i-01b324f0b8b6c25ea-enc01997668bda38b2a"
@@ -416,18 +419,6 @@ fn test_attestation_declaring_a_non_es384_algorithm_is_rejected() {
 		),
 		"A non-ES384 algorithm must be rejected by name, got {result:?}"
 	);
-}
-
-#[test]
-fn test_attestation_without_a_public_key_is_rejected() {
-	let (_, mut doc) =
-		crate::nsm::parse_cose_attestation_doc(&real_attestation_bytes()).expect("parses");
-	doc.public_key = None;
-
-	assert!(matches!(
-		EnclaveAttestationVerifier::extract_public_key(&doc),
-		Err(EnclaveAttestationError::InvalidEnclavePublicKey(_))
-	));
 }
 
 #[test]

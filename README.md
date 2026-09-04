@@ -74,21 +74,30 @@ let response: HealthStatus = send(connection, &HealthCheck).await?;
 
 The `channel` feature allows establishing an end-to-end encrypted channel, so a client can send data directly to the enclave without anyone else (chiefly the untrusted parent host) being able to read it. Every message is a [`quantum-box`](https://docs.rs/quantum-box) sealed box over X-Wing, a hybrid post-quantum KEM.
 
-The enclave usually generates a keypair per boot and attests its public key. The client then verifies the attestation and seals to the key it carried. Each request mints its own response key to receive an encrypted response.
+The enclave usually generates a keypair per boot and attests a commitment to its public key. The client verifies the attestation against that key before sealing to it. Each request mints its own response key to receive an encrypted response.
 
 The default flow looks as follows:
 
 ```rust,ignore
-use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
+use pontifex::{SecureModule, channel::{ChannelConsumer, ChannelDomain, ChannelEnclave}};
 
 // The name is the only lever for a breaking wire change, so carry a version in it.
 const DOMAIN: ChannelDomain = ChannelDomain::new("my-protocol/match_v1");
 
-// Enclave (usually once per boot): Attest `enclave.public_key()`, then hand those bytes out.
+// Enclave (usually once per boot). The X-Wing key is larger than the attestation document's
+// `public_key` field allows, so attest its commitment and hand the key out alongside.
 let enclave = ChannelEnclave::generate(DOMAIN)?;
+let attestation_doc = SecureModule::global().raw_attest(
+    Some(enclave.public_key_commitment()), // user_data
+    None::<Vec<u8>>,
+    None::<Vec<u8>>,
+)?;
+let enclave_public_key = enclave.public_key();
 
-// End consumer: verifies the attestation and takes the public key from it.
-let (consumer, attestation) = ChannelConsumer::from_attestation(DOMAIN, &verifier, &attestation_doc)?;
+// End consumer: one call verifies the attestation, checks it commits to this key, and
+// builds the consumer. There is no way to skip the check and still get a consumer.
+let (consumer, attestation) =
+    ChannelConsumer::from_attestation(DOMAIN, &verifier, &attestation_doc, &enclave_public_key)?;
 let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;
 
 // Enclave: open the request, seal the one reply it belongs to.
@@ -120,6 +129,11 @@ let verifier = EnclaveAttestationVerifier::new(vec![vec![
 let attestation = verifier.verify_attestation_document_base64(&attestation_doc_base64)?;
 println!("enclave module: {}", attestation.module_id);
 ```
+
+`VerifiedAttestation` carries the signed `nonce` and `user_data`, so a custom payload can be
+checked against whatever challenge you issued. To bind a key too large for the document's
+1024-byte `public_key` field, attest `pontifex::public_key_commitment(&key)` in `user_data` and
+verify with `verify_attestation_document_with_key_commitment`.
 
 ## Releases
 

@@ -18,7 +18,7 @@ description = "An abstraction for building and interacting with AWS Nitro enclav
 default=["http"]
 client = ["dep:tokio-vsock", "dep:rmp-serde"]
 server = ["tokio/rt", "dep:tokio-vsock", "dep:rmp-serde"]
-nsm = ["nsm-types", "aws-nitro-enclaves-nsm-api/nix", "tokio/sync"]
+nsm = ["nsm-types", "aws-nitro-enclaves-nsm-api/nix", "tokio/sync", "dep:sha2"]
 nsm-types = [
     "dep:coset",
     "dep:ciborium",
@@ -28,6 +28,7 @@ nsm-types = [
 http = ["_vsock-https"]
 channel = [
     "attestation",
+    "dep:sha2",
     "dep:quantum-box",
     "dep:zeroize",
 ]
@@ -43,6 +44,7 @@ kms = [
 attestation = [
     "nsm-types",
     "dep:base64",
+    "dep:sha2",
     "dep:p384",
     "dep:webpki",
     "dep:x509-cert",
@@ -103,6 +105,7 @@ rustls = { version = "0.23", optional = true, default-features = false, features
 quantum-box = { version = "0.1", optional = true }
 zeroize = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 base64 = { version = "0.22", optional = true }
+sha2 = { version = "0.10", optional = true }
 coset = { version = "0.4", optional = true }
 ciborium = { version = "0.2", optional = true }
 webpki = { version = "0.22", optional = true }

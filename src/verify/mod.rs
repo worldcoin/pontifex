@@ -6,7 +6,10 @@ use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use webpki::{EndEntityCert, TrustAnchor};
 use x509_cert::{Certificate, der::Decode};
 
-use crate::nsm::{AttestationDoc, parse_cose_attestation_doc};
+use crate::{
+	nsm::{AttestationDoc, parse_cose_attestation_doc},
+	public_key_commitment,
+};
 
 /// Constants for enclave verification
 pub mod constants;
@@ -110,6 +113,30 @@ impl EnclaveAttestationVerifier {
 		self.verify_attestation_document(&attestation_doc_bytes)
 	}
 
+	/// Verifies the attestation document and that it commits to `public_key`.
+	///
+	/// The NSM caps the document's `public_key` field at 1024 bytes, so a key too large for it
+	/// (such as a 1216-byte X-Wing encapsulation key) is bound by attesting
+	/// [`public_key_commitment`] in `user_data` and carrying the key alongside the document.
+	///
+	/// # Errors
+	/// Returns an error if verification fails, or [`EnclaveAttestationError::KeyCommitmentMismatch`]
+	/// if `user_data` is absent or does not equal the commitment to `public_key`.
+	pub fn verify_attestation_document_with_key_commitment(
+		&self,
+		attestation_doc_bytes: &[u8],
+		public_key: &[u8],
+	) -> Result<VerifiedAttestation, EnclaveAttestationError> {
+		let attestation = self.verify_attestation_document(attestation_doc_bytes)?;
+
+		let expected = public_key_commitment(public_key);
+		if attestation.user_data.as_deref() != Some(expected.as_slice()) {
+			return Err(EnclaveAttestationError::KeyCommitmentMismatch);
+		}
+
+		Ok(attestation)
+	}
+
 	/// Verifies the attestation document from the enclave.
 	///
 	/// Follows the AWS Nitro Enclave Attestation Document Specification:
@@ -138,10 +165,9 @@ impl EnclaveAttestationVerifier {
 		Self::verify_cose_signature(&cose_sign1, &leaf_cert)?;
 		self.validate_pcr_values(&attestation)?;
 		self.check_attestation_freshness(&attestation)?;
-		let public_key = Self::extract_public_key(&attestation)?;
 
 		Ok(VerifiedAttestation::new(
-			public_key,
+			attestation.public_key.map(serde_bytes::ByteBuf::into_vec),
 			attestation.timestamp,
 			attestation.module_id,
 			attestation.nonce.map(serde_bytes::ByteBuf::into_vec),
@@ -374,20 +400,6 @@ impl EnclaveAttestationVerifier {
 		}
 
 		Ok(())
-	}
-
-	fn extract_public_key(
-		attestation: &AttestationDoc,
-	) -> Result<Vec<u8>, EnclaveAttestationError> {
-		attestation
-			.public_key
-			.clone()
-			.map(serde_bytes::ByteBuf::into_vec)
-			.ok_or_else(|| {
-				EnclaveAttestationError::InvalidEnclavePublicKey(
-					"No public key in attestation document".to_string(),
-				)
-			})
 	}
 }
 
