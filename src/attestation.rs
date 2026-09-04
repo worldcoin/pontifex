@@ -6,10 +6,8 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::{Engine, engine::general_purpose::STANDARD};
 use coset::{Algorithm, CoseSign1, iana};
 use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
-use serde::Serialize;
 use webpki::{EndEntityCert, TrustAnchor};
 use x509_cert::{Certificate, der::Decode};
 
@@ -76,51 +74,33 @@ pub enum Error {
 	AttestationInvalidTimestamp(String),
 }
 
-/// Verified attestation data from the enclave.
+/// An attestation document that has passed verification.
 ///
-/// Only a verifier constructs this, so it deliberately does not implement `Deserialize`: a value
-/// decoded from a request body would claim a verification that never happened.
-#[derive(Debug, Clone, Serialize)]
-pub struct VerifiedAttestation {
-	/// The public key the enclave attested, if it carried one. Documents that bind a key by
-	/// commitment instead leave this empty.
-	pub enclave_public_key: Option<Vec<u8>>,
-
-	/// The timestamp of the attestation
-	pub timestamp: u64,
-	/// The module ID of the enclave
-	pub module_id: String,
-	/// The signed nonce, if the enclave was asked for one. Compare it against the challenge you
-	/// issued — the timestamp alone does not prove the document was minted for this session.
-	pub nonce: Option<Vec<u8>>,
-	/// The signed user data, if the enclave supplied any.
-	pub user_data: Option<Vec<u8>>,
-}
+/// Only [`Verifier`] constructs this, so the type in a signature is itself proof the document was
+/// checked. An [`AttestationDoc`] alone only means "parsed" — [`crate::nsm::parse_raw_attestation_doc`]
+/// verifies nothing.
+///
+/// The wrapped document is private, so no other module — inside this crate or out — can mint one:
+///
+/// ```compile_fail,E0603
+/// # use pontifex::{attestation::VerifiedAttestation, nsm::parse_raw_attestation_doc};
+/// let parsed = parse_raw_attestation_doc(b"...").unwrap();
+/// let forged = VerifiedAttestation(parsed); // the field is private
+/// ```
+#[derive(Debug, Clone)]
+pub struct VerifiedAttestation(AttestationDoc);
 
 impl VerifiedAttestation {
-	/// Creates a new `VerifiedAttestation`
-	///
-	/// # Arguments
-	/// * `enclave_public_key` - The public key the enclave attested, if any
-	/// * `timestamp` - The timestamp of the attestation
-	/// * `module_id` - The module ID of the enclave
-	/// * `nonce` - The signed nonce, if any
-	/// * `user_data` - The signed user data, if any
+	/// The verified document, with every field the enclave signed.
 	#[must_use]
-	pub const fn new(
-		enclave_public_key: Option<Vec<u8>>,
-		timestamp: u64,
-		module_id: String,
-		nonce: Option<Vec<u8>>,
-		user_data: Option<Vec<u8>>,
-	) -> Self {
-		Self {
-			enclave_public_key,
-			timestamp,
-			module_id,
-			nonce,
-			user_data,
-		}
+	pub const fn document(&self) -> &AttestationDoc {
+		&self.0
+	}
+
+	/// Consumes the proof, returning the verified document.
+	#[must_use]
+	pub fn into_document(self) -> AttestationDoc {
+		self.0
 	}
 }
 
@@ -213,31 +193,6 @@ impl Verifier {
 		self
 	}
 
-	/// Verifies a base64-encoded attestation document
-	///
-	/// This is a convenience method that handles base64 decoding and then verifies the document
-	///
-	/// # Arguments
-	/// * `attestation_doc_base64` - The base64-encoded attestation document
-	///
-	/// # Returns
-	/// A verified attestation containing the enclave's public key and PCR values
-	///
-	/// # Errors
-	/// Returns an error if the base64 decoding fails or the attestation document verification fails
-	pub fn verify_attestation_document_base64(
-		&self,
-		attestation_doc_base64: &str,
-	) -> Result<VerifiedAttestation, Error> {
-		let attestation_doc_bytes = STANDARD.decode(attestation_doc_base64).map_err(|e| {
-			Error::AttestationDocumentParseError(format!(
-				"Failed to decode base64 attestation document: {e}"
-			))
-		})?;
-
-		self.verify_attestation_document(&attestation_doc_bytes)
-	}
-
 	/// Verifies the attestation document from the enclave.
 	///
 	/// Follows the AWS Nitro Enclave Attestation Document Specification:
@@ -267,13 +222,7 @@ impl Verifier {
 		self.validate_pcr_values(&attestation)?;
 		self.check_attestation_freshness(&attestation)?;
 
-		Ok(VerifiedAttestation::new(
-			attestation.public_key.map(serde_bytes::ByteBuf::into_vec),
-			attestation.timestamp,
-			attestation.module_id,
-			attestation.nonce.map(serde_bytes::ByteBuf::into_vec),
-			attestation.user_data.map(serde_bytes::ByteBuf::into_vec),
-		))
+		Ok(VerifiedAttestation(attestation))
 	}
 
 	fn verify_certificate_chain(&self, attestation: &AttestationDoc) -> Result<Certificate, Error> {
@@ -517,11 +466,15 @@ mod tests {
 			.expect("attestation verification failed");
 
 		assert_eq!(
-			verified.enclave_public_key.as_deref(),
+			verified
+				.document()
+				.public_key
+				.as_ref()
+				.map(|k| k.as_slice()),
 			Some(ATTESTED_PUBLIC_KEY.as_slice())
 		);
 		assert_eq!(
-			verified.module_id,
+			verified.document().module_id,
 			"i-01b324f0b8b6c25ea-enc01997668bda38b2a"
 		);
 	}
@@ -654,7 +607,7 @@ mod tests {
 	}
 
 	// ============================================================================
-	// COMPREHENSIVE FAKE ATTESTATION TESTS
+	// FAKE ATTESTATION TESTS
 	// ============================================================================
 
 	#[test]
@@ -893,15 +846,6 @@ mod tests {
 				Err(Error::AttestationSignatureInvalid(ref m)) if m.contains("ES384")
 			),
 			"A non-ES384 algorithm must be rejected by name, got {result:?}"
-		);
-	}
-
-	#[test]
-	fn test_base64_input_that_is_not_base64_is_rejected() {
-		let result = real_attestation_verifier().verify_attestation_document_base64("not base64!!");
-		assert!(
-			matches!(result, Err(Error::AttestationDocumentParseError(_))),
-			"got {result:?}"
 		);
 	}
 

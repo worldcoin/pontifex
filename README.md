@@ -126,12 +126,13 @@ let verifier = Verifier::new(vec![vec![
 ]]);
 
 // Defaults to a three-hour freshness window; override with `.with_max_age(..)`.
-let attestation = verifier.verify_attestation_document_base64(&attestation_doc_base64)?;
-println!("enclave module: {}", attestation.module_id);
+// Takes the raw COSE bytes: how the document reached you is your protocol's business.
+let attestation = verifier.verify_attestation_document(&attestation_doc)?;
+println!("enclave module: {}", attestation.document().module_id);
 ```
 
-`VerifiedAttestation` carries the signed `nonce` and `user_data`, so a custom payload can be
-checked against whatever challenge you issued. Binding a key too large for the document's
+`VerifiedAttestation` wraps the whole signed document — `nonce`, `user_data`, PCRs and all —
+and only the verifier can construct one, so the type is itself proof the document was checked. Binding a key too large for the document's
 1024-byte `public_key` field is what `channel` does with
 `pontifex::channel::public_key_commitment`; see below.
 

@@ -243,7 +243,8 @@ impl ChannelConsumer {
 		let attestation = verifier.verify_attestation_document(attestation_doc)?;
 
 		let expected = public_key_commitment(enclave_public_key);
-		if attestation.user_data.as_deref() != Some(expected.as_slice()) {
+		let user_data = attestation.document().user_data.as_ref();
+		if user_data.map(|data| data.as_slice()) != Some(expected.as_slice()) {
 			return Err(ChannelError::KeyCommitmentMismatch);
 		}
 
