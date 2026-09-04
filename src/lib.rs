@@ -99,4 +99,12 @@ pub mod kms;
 #[cfg(feature = "http")]
 pub mod http;
 
+/// A confidential channel to a specific, measured enclave.
+#[cfg(feature = "channel")]
+pub mod channel;
+#[cfg(feature = "channel")]
+pub use channel::{
+	ChannelConsumer, ChannelDomain, ChannelEnclave, ChannelError, ResponseOpener, ResponseSealer,
+};
+
 mod utils;

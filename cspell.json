@@ -2,11 +2,15 @@
   "words": [
     "cbor",
     "ciborium",
+    "ciphertext",
     "Cose",
     "coset",
+    "csprng",
+    "hpke",
     "pcrs",
     "rustls",
     "thiserror",
+    "unseal",
     "vsock",
     "webpki"
   ]

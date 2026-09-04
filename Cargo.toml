@@ -2,7 +2,7 @@
 license = "MIT"
 edition = "2024"
 name = "pontifex"
-version = "1.1.2"
+version = "1.2.0"
 readme = "README.md"
 homepage = "https://docs.rs/pontifex"
 repository = "https://github.com/worldcoin/pontifex"
@@ -16,8 +16,8 @@ description = "An abstraction for building and interacting with AWS Nitro enclav
 
 [features]
 default=["http"]
-client = []
-server = ["tokio/rt"]
+client = ["dep:tokio-vsock", "dep:rmp-serde"]
+server = ["tokio/rt", "dep:tokio-vsock", "dep:rmp-serde"]
 nsm = ["nsm-types", "aws-nitro-enclaves-nsm-api/nix", "tokio/sync"]
 nsm-types = [
     "dep:coset",
@@ -26,6 +26,10 @@ nsm-types = [
     "dep:aws-nitro-enclaves-nsm-api",
 ]
 http = ["_vsock-https"]
+channel = [
+    "dep:quantum-box",
+    "dep:zeroize",
+]
 kms = [
     "_vsock-https",
     "dep:aws-types",
@@ -47,6 +51,7 @@ verify = [
 
 # Internal: The HTTPS-over-vsock transport, shared by `http` and `kms`.
 _vsock-https = [
+    "dep:tokio-vsock",
     "dep:hyper",
     "dep:rustls",
     "dep:hyper-util",
@@ -59,13 +64,14 @@ _vsock-https = [
 all-features = true
 
 [dependencies]
+const-fnv1a-hash = "1"
 serde = "1"
 tracing = "0.1"
-rmp-serde = "1"
 thiserror = "2"
-tokio-vsock = "0.7"
-aws-types = { version = "1", optional = true }
+rmp-serde = { version = "1", optional = true }
+tokio-vsock = { version = "0.7", optional = true }
 tokio = { version = "1", features = ["io-util"] }
+aws-types = { version = "1", optional = true }
 serde_bytes = { version = "0.11", optional = true }
 tower-service = { version = "0.3", optional = true }
 hyper = { version = "1", features = ["client"], optional = true }
@@ -95,7 +101,6 @@ rustls = { version = "0.23", optional = true, default-features = false, features
     "std",
     "tls12",
 ] }
-const-fnv1a-hash = "1.1.0"
 base64 = { version = "0.22", optional = true }
 coset = { version = "0.4", optional = true }
 ciborium = { version = "0.2", optional = true }
@@ -103,6 +108,8 @@ webpki = { version = "0.22", optional = true }
 x509-cert = { version = "0.2", optional = true }
 crypto_box = { version = "0.9", features = ["seal"], optional = true }
 p384 = { version = "0.13", default-features = false, features = ["ecdsa", "sha384"], optional = true }
+quantum-box = { version = "0.1", optional = true }
+zeroize = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
