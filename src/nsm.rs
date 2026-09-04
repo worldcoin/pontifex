@@ -1,3 +1,7 @@
+//! Enables low-level interfacing with the Nitro Secure Module (NSM).
+//!
+//! Some types are "*mirrored*" from `aws-nitro-enclaves-nsm-api` crate to avoid pulling in `libc` dep
+//! and unmaintained `serde_cbor`. The [`nsm_api_compat`] module ensures no-divergence.
 #[cfg(feature = "nsm")]
 pub use aws_nitro_enclaves_nsm_api::api::{ErrorCode, Request, Response};
 use std::collections::BTreeMap;
@@ -6,15 +10,11 @@ use coset::{CborSerializable, CoseSign1};
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 
-/// The digest algorithm used for the PCR values.
-///
-/// Mirrors the NSM's own type so a client does not need `aws-nitro-enclaves-nsm-api` — and with it
-/// `libc`, `log` and the unmaintained `serde_cbor` — merely to name it. `nsm_api_compat` below
-/// fails to compile if the two ever diverge.
+/// The digest algorithm used for the PCR values. **Mirrored**.
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
-#[allow(
+#[expect(
 	clippy::upper_case_acronyms,
-	reason = "wire format: the CBOR strings are uppercase"
+	reason = "wire format: CBOR strings are uppercase"
 )]
 pub enum Digest {
 	/// SHA256
@@ -25,10 +25,7 @@ pub enum Digest {
 	SHA512,
 }
 
-/// A Nitro attestation document, as carried in the payload of the COSE Sign1 envelope.
-///
-/// Field names and order are the wire format; see [`Digest`] on why this is defined here rather
-/// than borrowed from `aws-nitro-enclaves-nsm-api`.
+/// A Nitro attestation document, as carried in the payload of the COSE Sign1 envelope. **Mirrored**.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct AttestationDoc {
 	/// Issuing NSM ID.

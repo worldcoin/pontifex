@@ -16,8 +16,8 @@
 //!   verified attestation. [`ChannelConsumer::from_unverified_public_key`] skips that check.
 //! 4. This system does not offer direct replay protection for requests (e.g. a malicious host could inject
 //!   the same ciphertext multiple times). Add a separate mechanism if your trust assumptions require this.
-//! 5. The enclave attests the key commitment in the document's `public_key` field, so
-//!   `user_data` (512 bytes) and `nonce` (512 bytes) stay entirely yours.
+//! 5. The enclave attests the key commitment in the document's `public_key` field, `user_data` and `nonce`
+//!   can be used to carry additional data.
 
 use quantum_box::{PublicKey, SecretKey};
 use sha2::{Digest as _, Sha256};
@@ -348,6 +348,7 @@ mod tests {
 	};
 	use quantum_box::{PublicKey, SecretKey};
 
+	#[cfg(feature = "attestation")]
 	use crate::test_fixtures::{real_attestation_bytes, real_attestation_verifier};
 
 	const TEST_DOMAIN: ChannelDomain = ChannelDomain::new("pontifex/test");
@@ -625,6 +626,7 @@ mod tests {
 		assert_eq!(format!("{sealer:?}"), "ResponseSealer { .. }");
 	}
 
+	#[cfg(feature = "attestation")]
 	#[test]
 	fn from_attestation_rejects_a_tampered_document() {
 		let mut doc = real_attestation_bytes();
@@ -641,6 +643,7 @@ mod tests {
 		assert!(matches!(err, ChannelError::Attestation(_)), "got {err:?}");
 	}
 
+	#[cfg(feature = "attestation")]
 	#[test]
 	fn from_attestation_rejects_a_key_the_document_does_not_commit_to() {
 		let err = ChannelConsumer::from_attestation(

@@ -1,14 +1,10 @@
-//! Shared fixtures for the attestation tests.
-//!
-//! The document is a real one captured from a Nitro enclave, so its certificates and timestamp are
-//! long expired. Verifiers built here widen the age limit and pin certificate validity to the
-//! attestation's own timestamp; everything else is checked for real.
+//! Shared fixtures for tests.
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 
 use crate::attestation::{PcrConfig, Verifier};
 
-/// A real attestation document, base64-encoded.
+/// A real attestation document, base64-encoded. Expired, but this check is ignored for tests.
 pub const REAL_ATTESTATION_DOC_B64: &str = include_str!("../tests/real-attestation-doc.b64");
 
 /// The public key carried by [`REAL_ATTESTATION_DOC_B64`].
@@ -25,8 +21,7 @@ pub fn real_attestation_bytes() -> Vec<u8> {
 		.expect("fixture is valid base64")
 }
 
-/// The fixture enclave's PCR0, on its own — enough to satisfy the "must pin PCR0" rule for tests
-/// that are exercising some other stage.
+/// The fixture enclave's PCR0
 pub const fn pcr0_only() -> PcrConfig {
 	PcrConfig::new(hex_literal::hex!(
 		"108b32466f5dc0a9971e0bc8e3e4074e7821bb2dcad3841bdec9a08b30f173386f0394a01486df181f316b39443dab34"

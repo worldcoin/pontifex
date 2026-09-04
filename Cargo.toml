@@ -112,6 +112,7 @@ x509-cert = { version = "0.2", optional = true }
 p384 = { version = "0.13", default-features = false, features = ["ecdsa", "sha384"], optional = true }
 
 [dev-dependencies]
+aws-nitro-enclaves-nsm-api = { version = "0.4", default-features = false }
 base64 = "0.22"
 tokio-test = "0.4"
 tokio = { version = "1", features = ["macros", "rt", "test-util", "time"] }
