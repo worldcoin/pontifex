@@ -16,6 +16,8 @@
 //!   verified attestation. [`ChannelConsumer::from_unverified_public_key`] skips that check.
 //! 4. This system does not offer direct replay protection for requests (e.g. a malicious host could inject
 //!   the same ciphertext multiple times). Add a separate mechanism if your trust assumptions require this.
+//! 5. The enclave attests the key commitment in the document's `public_key` field, so
+//!   `user_data` (512 bytes) and `nonce` (512 bytes) stay entirely yours.
 
 use quantum_box::{PublicKey, SecretKey};
 use sha2::{Digest as _, Sha256};
@@ -36,12 +38,17 @@ const COMMITMENT_DOMAIN: &[u8] = b"pontifex/public-key-commitment/v1\0";
 
 /// Returns the 32-byte commitment to `public_key`.
 ///
-/// An X-Wing key is 1216 bytes and does not fit the attestation document's 1024-byte `public_key`
-/// field, so the enclave attests this instead and hands the key over alongside the document.
+/// An X-Wing key is 1216 bytes and no attestation document field is that large, so the enclave
+/// attests this digest in `public_key` and hands the real key over alongside the document.
+/// `user_data` and `nonce` are left entirely to the application.
+///
+/// AWS documents `public_key` as "an optional DER-encoded key", but that is a comment in the
+/// spec: the normative rule is `Byte String, length ∈ [1, 1024]`, and real enclaves put raw keys
+/// there.
 ///
 /// Computes `SHA-256(domain || public_key)` over the raw key bytes, before any transport encoding.
-/// The domain separator is what stops a digest computed for some other purpose — `user_data` is a
-/// free-form field — being replayed as a commitment to an attacker's key.
+/// The domain separator is what stops a digest computed for some other purpose being replayed as
+/// a commitment to an attacker's key.
 #[must_use]
 pub fn public_key_commitment(public_key: &[u8]) -> [u8; 32] {
 	Sha256::new()
@@ -71,7 +78,7 @@ pub enum ChannelError {
 	#[cfg(feature = "attestation")]
 	#[error("ChannelError::Attestation: {0}")]
 	Attestation(#[from] attestation::Error),
-	/// The attestation verified, but its `user_data` does not commit to the supplied public key.
+	/// The attestation verified, but it does not commit to the supplied public key.
 	#[cfg(feature = "attestation")]
 	#[error("ChannelError::KeyCommitmentMismatch")]
 	KeyCommitmentMismatch,
@@ -133,9 +140,9 @@ impl ChannelEnclave {
 		self.secret_key.public_key().to_bytes()
 	}
 
-	/// The commitment to [`Self::public_key`] to attest in the document's `user_data`.
+	/// The commitment to [`Self::public_key`], to attest in the document's `public_key` field.
 	///
-	/// The key itself does not fit the NSM's 1024-byte `public_key` field; this does.
+	/// The key itself is 1216 bytes and does not fit that field's 1024-byte limit; this does.
 	#[must_use]
 	pub fn public_key_commitment(&self) -> [u8; 32] {
 		public_key_commitment(&self.public_key())
@@ -225,9 +232,9 @@ impl ChannelConsumer {
 	/// consumer sealing to that key.
 	///
 	/// This is the constructor to reach for. The key is too large for the attestation document's
-	/// `public_key` field, so the enclave attests
-	/// [`ChannelEnclave::public_key_commitment`] in `user_data` and returns the key alongside the
-	/// document; verifying the two together is what makes the key trustworthy.
+	/// `public_key` field, so the enclave attests [`ChannelEnclave::public_key_commitment`] there
+	/// instead and returns the key alongside the document; verifying the two together is what
+	/// makes the key trustworthy.
 	///
 	/// # Errors
 	///
@@ -243,8 +250,8 @@ impl ChannelConsumer {
 		let attestation = verifier.verify_attestation_document(attestation_doc)?;
 
 		let expected = public_key_commitment(enclave_public_key);
-		let user_data = attestation.document().user_data.as_ref();
-		if user_data.map(|data| data.as_slice()) != Some(expected.as_slice()) {
+		let attested = attestation.document().public_key.as_ref();
+		if attested.map(|key| key.as_slice()) != Some(expected.as_slice()) {
 			return Err(ChannelError::KeyCommitmentMismatch);
 		}
 
@@ -642,8 +649,9 @@ mod tests {
 		assert!(matches!(err, ChannelError::Attestation(_)), "got {err:?}");
 	}
 
-	/// The fixture's `user_data` is empty, so it commits to no key at all — which is exactly what
-	/// an attacker replaying a genuine document alongside their own key would present.
+	/// The fixture attests a raw 32-byte key rather than a commitment, so it commits to no channel
+	/// key at all — exactly what an attacker replaying a genuine document beside their own key
+	/// would present.
 	#[test]
 	fn from_attestation_rejects_a_key_the_document_does_not_commit_to() {
 		let err = ChannelConsumer::from_attestation(
@@ -696,8 +704,8 @@ mod tests {
 		);
 	}
 
-	/// `user_data` is a free-form field, so a bare digest computed there for another purpose could
-	/// otherwise be replayed as a commitment to an attacker's key.
+	/// The document's byte-string fields are free-form, so a bare digest written to one for another
+	/// purpose could otherwise be replayed as a commitment to an attacker's key.
 	#[test]
 	fn the_domain_separator_is_covered() {
 		use sha2::{Digest as _, Sha256};

@@ -25,11 +25,25 @@ pub fn real_attestation_bytes() -> Vec<u8> {
 		.expect("fixture is valid base64")
 }
 
+/// The fixture enclave's PCR0, on its own — enough to satisfy the "must pin PCR0" rule for tests
+/// that are exercising some other stage.
+pub fn pcr0_only() -> Vec<PcrMeasurement> {
+	vec![PcrMeasurement::new(
+		0,
+		hex_literal::hex!(
+			"108b32466f5dc0a9971e0bc8e3e4074e7821bb2dcad3841bdec9a08b30f173386f0394a01486df181f316b39443dab34"
+		),
+	)]
+}
+
 /// A verifier configured with the PCR values the fixture enclave actually reported.
 pub fn real_attestation_verifier() -> Verifier {
-	let mut verifier = Verifier::new(vec![])
-		.with_max_age(TEN_YEARS)
-		.with_skipped_certificate_time_check();
+	real_attestation_verifier_with_max_age(TEN_YEARS)
+}
+
+/// As [`real_attestation_verifier`], with a caller-chosen freshness window.
+pub fn real_attestation_verifier_with_max_age(max_age: std::time::Duration) -> Verifier {
+	let mut verifier = Verifier::new(vec![], max_age).with_skipped_certificate_time_check();
 
 	verifier.add_allowed_pcr_config(vec![
 		PcrMeasurement::new(
