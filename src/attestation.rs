@@ -1,8 +1,4 @@
 //! Verification of AWS Nitro Enclave attestation documents.
-//!
-//! Checks a document's COSE Sign1 signature, its certificate chain up to the AWS Nitro root, the
-//! PCR values identifying the enclave's code, and the document's age. What the document *asserts*
-//! — its `public_key`, `nonce` and `user_data` — is returned for the caller to interpret.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -20,15 +16,18 @@ use crate::nsm::{AttestationDoc, Digest};
 pub const AWS_NITRO_ROOT_CERT: &[u8] = include_bytes!("aws_nitro_root_g1.der");
 
 /// The PCR holding the hash of the enclave image file, which is what pins the code being run.
+///
+/// Reference: <https://docs.aws.amazon.com/enclaves/latest/user/set-up-attestation.html#where>
 pub const PCR_ENCLAVE_IMAGE: u32 = 0;
 
-/// Length of a Nitro PCR value. The attestation spec fixes the digest at SHA-384, and the
-/// verifier already hardcodes `ECDSA_P384_SHA384` for the certificate chain.
+/// Length of a Nitro PCR value (`ECDSA_P384_SHA384`).
 pub const PCR_LENGTH: usize = 48;
 
-/// Get the expected PCR length depending on the hashing algorithm used
-/// As of right now, only SHA-384 is used
-/// More info: <https://docs.aws.amazon.com/enclaves/latest/user/set-up-attestation.html>
+/// How far ahead of the verifier's clock an attestation may be dated before it is an error.
+const CLOCK_SKEW_TOLERANCE_MILLIS: u64 = 60_000;
+
+/// Get the expected PCR length depending on the hashing algorithm used.
+/// As of right now, only SHA-384 is used: <https://docs.aws.amazon.com/enclaves/latest/user/set-up-attestation.html>
 #[must_use]
 pub const fn get_expected_pcr_length(digest: Digest) -> usize {
 	match digest {
@@ -44,15 +43,15 @@ pub const fn get_expected_pcr_length(digest: Digest) -> usize {
 pub enum Error {
 	/// Failed to parse attestation document
 	#[error("Failed to parse attestation document: {0}")]
-	AttestationDocumentParseError(String),
+	ParseError(String),
 
 	/// Certificate chain validation failed
 	#[error("Certificate chain validation failed: {0}")]
-	AttestationChainInvalid(String),
+	ChainInvalid(String),
 
 	/// Signature verification failed
 	#[error("Signature verification failed: {0}")]
-	AttestationSignatureInvalid(String),
+	SignatureInvalid(String),
 
 	/// PCR value did not match the expected value
 	#[error("PCR{pcr_index} value not trusted: {actual}")]
@@ -65,7 +64,7 @@ pub enum Error {
 
 	/// Attestation timestamp is too old
 	#[error("Attestation is too old: {age_millis}ms (max: {max_age}ms)")]
-	AttestationStale {
+	Stale {
 		/// The age of the attestation in milliseconds
 		age_millis: u64,
 		/// The maximum age of the attestation in milliseconds
@@ -77,12 +76,7 @@ pub enum Error {
 	AttestationInvalidTimestamp(String),
 }
 
-/// An attestation document that has passed verification.
-///
-/// Only [`Verifier`] constructs this, so the type in a signature is itself proof the document was
-/// checked. An [`AttestationDoc`] alone only means "parsed"; parsing verifies nothing.
-///
-/// The wrapped document is private, so no other module — inside this crate or out — can mint one:
+/// An [`AttestationDoc`] that has been signature verified.
 ///
 /// ```compile_fail,E0603
 /// # use pontifex::{attestation::VerifiedAttestation, nsm::AttestationDoc};
@@ -94,112 +88,24 @@ pub enum Error {
 pub struct VerifiedAttestation(AttestationDoc);
 
 impl VerifiedAttestation {
-	/// The verified document, with every field the enclave signed.
+	/// The verified [`AttestationDoc`].
 	#[must_use]
 	pub const fn document(&self) -> &AttestationDoc {
 		&self.0
 	}
 
-	/// Consumes the proof, returning the verified document.
+	/// Consumes the proof, returning the verified [`AttestationDoc`].
 	#[must_use]
 	pub fn into_document(self) -> AttestationDoc {
 		self.0
 	}
 }
 
-/// Represents a PCR measurement with its index and value
-/// Used to define expected PCR values for attestation verification
-#[derive(Clone, Debug)]
-pub struct PcrMeasurement {
-	/// Index of the PCR measurement
-	pub index: u32,
-	/// Byte array representing the PCR value
-	pub value: Vec<u8>,
-}
-
-/// One accepted enclave build.
-///
-/// ```compile_fail,E0061
-/// # use pontifex::attestation::PcrConfig;
-/// let config = PcrConfig::new(); // PCR0 is not optional
-/// ```
-///
-/// PCR0 is a field rather than a list entry, so a configuration that pins no code identity cannot
-/// be constructed. Every other PCR is optional — which ones matter is yours to decide, and PCR3
-/// and PCR4 (IAM role, instance ID) are usually wrong to pin at all.
-#[derive(Clone, Debug)]
-pub struct PcrConfig {
-	enclave_image: [u8; PCR_LENGTH],
-	additional: Vec<PcrMeasurement>,
-}
-
-impl PcrConfig {
-	/// Pins PCR0, the SHA-384 hash of the whole enclave image.
-	#[must_use]
-	pub const fn new(enclave_image: [u8; PCR_LENGTH]) -> Self {
-		Self {
-			enclave_image,
-			additional: Vec::new(),
-		}
-	}
-
-	/// Also pins `index`. Passing [`PCR_ENCLAVE_IMAGE`] adds a second constraint on PCR0 rather
-	/// than replacing the one given to [`Self::new`]; if the two disagree, nothing matches.
-	#[must_use]
-	pub fn with_pcr(mut self, index: u32, value: impl Into<Vec<u8>>) -> Self {
-		self.additional.push(PcrMeasurement::new(index, value));
-		self
-	}
-
-	fn measurements(&self) -> impl Iterator<Item = (u32, &[u8])> {
-		std::iter::once((PCR_ENCLAVE_IMAGE, self.enclave_image.as_slice())).chain(
-			self.additional
-				.iter()
-				.map(|m| (m.index, m.value.as_slice())),
-		)
-	}
-}
-
-impl PcrMeasurement {
-	/// Creates a new `PcrMeasurement`
-	///
-	/// # Arguments
-	/// * `index` - The index of the PCR
-	/// * `value` - The expected value of the PCR
-	#[must_use]
-	pub fn new(index: u32, value: impl Into<Vec<u8>>) -> Self {
-		Self {
-			index,
-			value: value.into(),
-		}
-	}
-}
-
-/// How far ahead of the verifier's clock an attestation may be dated before it is an error.
-const CLOCK_SKEW_TOLERANCE_MILLIS: u64 = 60_000;
-
-fn hex_encode(bytes: &[u8]) -> String {
-	bytes.iter().fold(String::new(), |mut out, byte| {
-		use std::fmt::Write as _;
-		let _ = write!(out, "{byte:02x}");
-		out
-	})
-}
-
-/// Verifies AWS Nitro Enclave attestation documents
-///
-/// This struct performs comprehensive verification of attestation documents including:
-/// - COSE Sign1 signature verification
-/// - Certificate chain validation against AWS Nitro root certificates
-/// - PCR (Platform Configuration Register) value validation
-/// - Attestation document freshness checks
-/// - Public key extraction
+/// Verifies AWS Nitro Enclave attestation documents: COSE signature, cert chain,
+/// expected PCRs and freshness.
 #[derive(Debug)]
 pub struct Verifier {
-	/// Allowed PCR configs for validation
-	/// Each configuration is a list of (PCR index, expected value) pairs.
-	///
-	/// This allows for supporting multiple enclave software versions.
+	/// Allowed PCR configs for validation. Accepts multiple to support different versions.
 	allowed_pcr_configs: Vec<PcrConfig>,
 	root_certificate: Vec<u8>,
 	max_age: Duration,
@@ -208,14 +114,12 @@ pub struct Verifier {
 }
 
 impl Verifier {
-	/// Creates a new `Verifier` trusting the AWS Nitro root certificate.
+	/// Creates a new `Verifier` from the AWS Nitro root certificate.
 	///
 	/// # Arguments
 	/// * `allowed_pcr_configs` - Allowed PCR configurations. Verification succeeds if *any* one
 	///   matches in full, which is how several enclave software versions are supported at once.
-	/// * `max_age` - How old a document may be before it is rejected as stale. There is no
-	///   default: the right window depends on how the document reaches you and how long a replay
-	///   would stay useful, which only the caller knows.
+	/// * `max_age` - How old a document may be before it is rejected as stale.
 	#[must_use]
 	pub fn new(allowed_pcr_configs: Vec<PcrConfig>, max_age: Duration) -> Self {
 		Self {
@@ -228,6 +132,9 @@ impl Verifier {
 	}
 
 	/// Sets the DER-encoded root certificate the attestation chain must chain up to.
+	///
+	/// # Warning
+	/// This completely changes the roof of trust. Don't use unless you know what you're doing.
 	#[must_use]
 	pub fn with_root_certificate(mut self, root_certificate: Vec<u8>) -> Self {
 		self.root_certificate = root_certificate;
@@ -236,24 +143,17 @@ impl Verifier {
 
 	/// Verifies the attestation document from the enclave.
 	///
-	/// Follows the AWS Nitro Enclave Attestation Document Specification:
-	/// <https://docs.aws.amazon.com/enclaves/latest/user/nitro-enclave-attestation-document.html>
-	///
-	/// # Arguments
-	/// * `attestation_doc_bytes` - The raw (COSE Sign1) attestation document
-	///
-	/// # Returns
-	/// A verified attestation containing the enclave's public key and PCR values
+	/// Reference: <https://docs.aws.amazon.com/enclaves/latest/user/nitro-enclave-attestation-document.html>
 	///
 	/// # Errors
-	/// Returns an error if any verification step fails
+	/// Returns an error if any verification step fails.
 	pub fn verify_attestation_document(
 		&self,
 		attestation_doc_bytes: &[u8],
 	) -> Result<VerifiedAttestation, Error> {
 		// 1. Syntactical validation
 		let (attestation, cose_sign1) = AttestationDoc::from_bytes(attestation_doc_bytes)
-			.map_err(|e| Error::AttestationDocumentParseError(e.to_string()))?;
+			.map_err(|e| Error::ParseError(e.to_string()))?;
 
 		// 2. Semantic validation
 		let leaf_cert = self.verify_certificate_chain(&attestation)?;
@@ -270,7 +170,7 @@ impl Verifier {
 		let root_cert_der = self.root_certificate.as_slice();
 
 		let trust_anchor = TrustAnchor::try_from_cert_der(root_cert_der).map_err(|e| {
-			Error::AttestationChainInvalid(format!(
+			Error::ChainInvalid(format!(
 				"Failed to create trust anchor from root certificate: {e}"
 			))
 		})?;
@@ -294,7 +194,6 @@ impl Verifier {
 		};
 
 		let current_time = if should_skip_time_check {
-			// Tests only: judge validity at the attestation's own time, so expired fixtures work.
 			webpki::Time::from_seconds_since_unix_epoch(attestation.timestamp / 1000)
 		} else {
 			let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| {
@@ -303,10 +202,8 @@ impl Verifier {
 			webpki::Time::from_seconds_since_unix_epoch(now.as_secs())
 		};
 
-		let end_entity_cert =
-			EndEntityCert::try_from(attestation.certificate.as_slice()).map_err(|e| {
-				Error::AttestationChainInvalid(format!("Failed to parse leaf certificate: {e}"))
-			})?;
+		let end_entity_cert = EndEntityCert::try_from(attestation.certificate.as_slice())
+			.map_err(|e| Error::ChainInvalid(format!("Failed to parse leaf certificate: {e}")))?;
 
 		end_entity_cert
 			.verify_is_valid_tls_server_cert(
@@ -316,60 +213,47 @@ impl Verifier {
 				current_time,
 			)
 			.map_err(|e| {
-				Error::AttestationChainInvalid(format!("Certificate chain validation failed: {e}"))
+				Error::ChainInvalid(format!("Certificate chain validation failed: {e}"))
 			})?;
 
 		Certificate::from_der(&attestation.certificate).map_err(|e| {
-			Error::AttestationChainInvalid(format!(
-				"Failed to parse leaf certificate for return: {e}"
-			))
+			Error::ChainInvalid(format!("Failed to parse leaf certificate for return: {e}"))
 		})
 	}
 
 	fn verify_cose_signature(cose_sign1: &CoseSign1, leaf_cert: &Certificate) -> Result<(), Error> {
 		let spki = &leaf_cert.tbs_certificate.subject_public_key_info;
 		let public_key_bytes = spki.subject_public_key.as_bytes().ok_or_else(|| {
-			Error::AttestationSignatureInvalid("Failed to extract public key bytes".to_string())
+			Error::SignatureInvalid("Failed to extract public key bytes".to_string())
 		})?;
 
 		let verifying_key = VerifyingKey::from_sec1_bytes(public_key_bytes).map_err(|e| {
-			Error::AttestationSignatureInvalid(format!("Failed to parse P-384 public key: {e}"))
+			Error::SignatureInvalid(format!("Failed to parse P-384 public key: {e}"))
 		})?;
 
-		// The spec fixes the algorithm at ES384; accepting a document that declares anything else
-		// would let the header disagree with the P-384 check performed below.
 		let alg = cose_sign1.protected.header.alg.as_ref();
 		if alg != Some(&Algorithm::Assigned(iana::Algorithm::ES384)) {
-			return Err(Error::AttestationSignatureInvalid(format!(
+			return Err(Error::SignatureInvalid(format!(
 				"Expected ES384 in the protected header, got {alg:?}"
 			)));
 		}
 
-		// coset substitutes an empty payload when there is none, which would verify a signature
-		// over a document this function never saw.
 		if cose_sign1.payload.is_none() {
-			return Err(Error::AttestationSignatureInvalid(
+			return Err(Error::SignatureInvalid(
 				"Missing payload in COSE Sign1".to_string(),
 			));
 		}
 
-		// `verify_signature` reconstructs the COSE Sign1 `Sig_structure`
-		// (`["Signature1", protected, external_aad, payload]`) and hands it to the closure
-		// alongside the signature. Nitro attestations carry no external AAD.
 		cose_sign1.verify_signature(&[], |signature, signed_data| {
 			let ecdsa_signature = Signature::try_from(signature).map_err(|e| {
-				Error::AttestationSignatureInvalid(format!(
+				Error::SignatureInvalid(format!(
 					"Failed to parse ECDSA signature (need 96 raw bytes): {e}"
 				))
 			})?;
 
 			verifying_key
 				.verify(signed_data, &ecdsa_signature)
-				.map_err(|e| {
-					Error::AttestationSignatureInvalid(format!(
-						"Signature verification failed: {e}"
-					))
-				})
+				.map_err(|e| Error::SignatureInvalid(format!("Signature verification failed: {e}")))
 		})
 	}
 
@@ -396,8 +280,6 @@ impl Verifier {
 			});
 		}
 
-		// Supporting several enclave software versions at once means any one config may match.
-		// Each `PcrConfig` necessarily pins PCR0, so none of them can match vacuously.
 		let mut first_mismatch = None;
 		for config in &self.allowed_pcr_configs {
 			match Self::first_mismatch(attestation, config, expected_length) {
@@ -447,8 +329,6 @@ impl Verifier {
 			))
 		})?;
 
-		// Clocks drift between the enclave and the verifier, so a slightly future timestamp is
-		// skew rather than a forgery. Beyond the tolerance it is a real error.
 		let age = match now.checked_sub(attestation.timestamp) {
 			Some(age) => age,
 			None if attestation.timestamp - now <= CLOCK_SKEW_TOLERANCE_MILLIS => 0,
@@ -462,7 +342,7 @@ impl Verifier {
 
 		let max_age_millis = u64::try_from(self.max_age.as_millis()).unwrap_or(u64::MAX);
 		if age > max_age_millis {
-			return Err(Error::AttestationStale {
+			return Err(Error::Stale {
 				age_millis: age,
 				max_age: max_age_millis,
 			});
@@ -470,6 +350,77 @@ impl Verifier {
 
 		Ok(())
 	}
+}
+
+/// Represents expected PCR measurements with its index and value.
+#[derive(Clone, Debug)]
+pub struct PcrMeasurement {
+	/// Index of the PCR measurement
+	pub index: u32,
+	/// Byte array representing the PCR value
+	pub value: Vec<u8>,
+}
+
+impl PcrMeasurement {
+	/// Creates a new `PcrMeasurement`
+	///
+	/// # Arguments
+	/// * `index` - The index of the PCR
+	/// * `value` - The expected value of the PCR
+	#[must_use]
+	pub fn new(index: u32, value: impl Into<Vec<u8>>) -> Self {
+		Self {
+			index,
+			value: value.into(),
+		}
+	}
+}
+
+/// Accepted enclave build.
+///
+/// ```compile_fail,E0061
+/// # use pontifex::attestation::PcrConfig;
+/// let config = PcrConfig::new(); // PCR0 is not optional
+/// ```
+#[derive(Clone, Debug)]
+pub struct PcrConfig {
+	/// PCR0: Enclave image file. Always required to avoid implementation mistakes.
+	enclave_image: [u8; PCR_LENGTH],
+	additional: Vec<PcrMeasurement>,
+}
+
+impl PcrConfig {
+	/// Init a config from a specific PCR.
+	#[must_use]
+	pub const fn new(enclave_image: [u8; PCR_LENGTH]) -> Self {
+		Self {
+			enclave_image,
+			additional: Vec::new(),
+		}
+	}
+
+	/// Pin a specific additional PCR measurement.
+	#[must_use]
+	pub fn with_pcr(mut self, index: u32, value: impl Into<Vec<u8>>) -> Self {
+		self.additional.push(PcrMeasurement::new(index, value));
+		self
+	}
+
+	fn measurements(&self) -> impl Iterator<Item = (u32, &[u8])> {
+		std::iter::once((PCR_ENCLAVE_IMAGE, self.enclave_image.as_slice())).chain(
+			self.additional
+				.iter()
+				.map(|m| (m.index, m.value.as_slice())),
+		)
+	}
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+	bytes.iter().fold(String::new(), |mut out, byte| {
+		use std::fmt::Write as _;
+		let _ = write!(out, "{byte:02x}");
+		out
+	})
 }
 
 #[cfg(test)]
@@ -504,7 +455,6 @@ mod tests {
 		real_attestation_verifier, real_attestation_verifier_with_max_age,
 	};
 
-	// This tests verifies a real attestation document with real PCR values.
 	#[test]
 	fn test_real_attestation_document() {
 		let verified = real_attestation_verifier()
@@ -525,8 +475,6 @@ mod tests {
 		);
 	}
 
-	// Failure cases
-	/// Configuration for generating basic fake attestation documents
 	#[derive(Debug, Clone)]
 	struct SimpleFakeAttestationConfig {
 		/// Module ID for the attestation
@@ -550,8 +498,6 @@ mod tests {
 		}
 	}
 
-	/// Generate a minimal fake attestation document CBOR for testing
-	/// This creates invalid attestation documents that can be used to test specific error conditions
 	fn generate_simple_fake_attestation_self_signed(
 		config: &SimpleFakeAttestationConfig,
 	) -> Result<Vec<u8>, Error> {
@@ -583,13 +529,11 @@ mod tests {
 
 		let mut payload = Vec::new();
 		ciborium::into_writer(&doc, &mut payload).map_err(|e| {
-			Error::AttestationDocumentParseError(format!(
+			Error::ParseError(format!(
 				"Failed to serialize fake attestation document: {e}"
 			))
 		})?;
 
-		// Built through coset so the envelope is structurally valid COSE_Sign1. A fixture that fails
-		// at the parser cannot exercise the chain, signature or PCR stages it is named for.
 		CoseSign1 {
 			protected: ProtectedHeader::default(),
 			unprotected: Header::default(),
@@ -597,25 +541,15 @@ mod tests {
 			signature: vec![0x00; 96],
 		}
 		.to_vec()
-		.map_err(|e| {
-			Error::AttestationDocumentParseError(format!("Failed to encode fake COSE Sign1: {e}"))
-		})
+		.map_err(|e| Error::ParseError(format!("Failed to encode fake COSE Sign1: {e}")))
 	}
 
-	/// Flip one bit of the real document's signature, leaving every other byte untouched.
-	///
-	/// The signature is the trailing 96-byte bstr of the `COSE_Sign1` array, so mutating the last byte
-	/// cannot disturb the envelope, the certificate chain or the payload.
 	fn real_attestation_with_tampered_signature() -> Vec<u8> {
 		let mut bytes = real_attestation_bytes();
 		*bytes.last_mut().expect("document is not empty") ^= 0x01;
 		bytes
 	}
 
-	/// Flip one bit of a PCR value inside the real document's signed payload.
-	///
-	/// PCR bytes are covered by the signature but are read only after it is checked, so this reaches
-	/// `verify_cose_signature` rather than failing earlier on the certificate chain.
 	fn real_attestation_with_tampered_payload() -> Vec<u8> {
 		let mut bytes = real_attestation_bytes();
 		let (attestation, _) = AttestationDoc::from_bytes(&bytes).expect("real document parses");
@@ -630,17 +564,12 @@ mod tests {
 		bytes
 	}
 
-	/// A valid DER certificate that is not the Nitro root: the real document's own leaf.
-	///
-	/// Using it as the trust anchor exercises chain building against an untrusted root, rather than
-	/// failing earlier on a malformed anchor.
 	fn untrusted_root_certificate() -> Vec<u8> {
 		let bytes = real_attestation_bytes();
 		let (attestation, _) = AttestationDoc::from_bytes(&bytes).expect("real document parses");
 		attestation.certificate.into_vec()
 	}
 
-	/// Generate a fake attestation with invalid certificate chain
 	fn generate_fake_attestation_invalid_cert_chain() -> Vec<u8> {
 		let config = SimpleFakeAttestationConfig {
 			certificate: vec![0x00; 4],
@@ -650,13 +579,8 @@ mod tests {
 		generate_simple_fake_attestation_self_signed(&config).unwrap()
 	}
 
-	// ============================================================================
-	// FAKE ATTESTATION TESTS
-	// ============================================================================
-
 	#[test]
 	fn test_attestation_with_different_root_ca() {
-		// The document is genuine; only the trust anchor is wrong.
 		let attestation = real_attestation_bytes();
 
 		let verifier = Verifier::new(vec![pcr0_only()], TEN_YEARS)
@@ -665,15 +589,11 @@ mod tests {
 
 		let result = verifier.verify_attestation_document(&attestation);
 		assert!(
-			matches!(result, Err(Error::AttestationChainInvalid(_))),
+			matches!(result, Err(Error::ChainInvalid(_))),
 			"Should reject attestation that does not chain to the configured root, got {result:?}"
 		);
 	}
 
-	/// A tampered signature must be rejected by `verify_cose_signature`.
-	///
-	/// Every other negative fixture fails at the certificate chain, so without this test the suite
-	/// still passes with the signature check removed entirely.
 	#[test]
 	fn test_attestation_with_tampered_signature() {
 		let verifier = real_attestation_verifier();
@@ -681,12 +601,11 @@ mod tests {
 		let result =
 			verifier.verify_attestation_document(&real_attestation_with_tampered_signature());
 		assert!(
-			matches!(result, Err(Error::AttestationSignatureInvalid(_))),
+			matches!(result, Err(Error::SignatureInvalid(_))),
 			"Should reject a tampered signature, got {result:?}"
 		);
 	}
 
-	/// A tampered payload must be rejected too: the payload is part of the COSE `Sig_structure`.
 	#[test]
 	fn test_attestation_with_tampered_payload() {
 		let verifier = real_attestation_verifier();
@@ -694,14 +613,13 @@ mod tests {
 		let result =
 			verifier.verify_attestation_document(&real_attestation_with_tampered_payload());
 		assert!(
-			matches!(result, Err(Error::AttestationSignatureInvalid(_))),
+			matches!(result, Err(Error::SignatureInvalid(_))),
 			"Should reject a tampered payload, got {result:?}"
 		);
 	}
 
-	/// Trailing bytes after the COSE envelope are outside the signature, so they must be rejected.
 	#[test]
-	fn test_attestation_with_trailing_bytes() {
+	fn test_attestation_with_trailing_bytes_is_rejected() {
 		let verifier = real_attestation_verifier();
 
 		let mut attestation = real_attestation_bytes();
@@ -709,7 +627,7 @@ mod tests {
 
 		let result = verifier.verify_attestation_document(&attestation);
 		assert!(
-			matches!(result, Err(Error::AttestationDocumentParseError(_))),
+			matches!(result, Err(Error::ParseError(_))),
 			"Should reject unsigned trailing data, got {result:?}"
 		);
 	}
@@ -723,20 +641,19 @@ mod tests {
 
 		let result = verifier.verify_attestation_document(&fake_attestation);
 		assert!(
-			matches!(result, Err(Error::AttestationChainInvalid(_))),
+			matches!(result, Err(Error::ChainInvalid(_))),
 			"Should reject invalid certificate chain, got {result:?}"
 		);
 	}
 
 	#[test]
 	fn test_attestation_with_expired_certificate() {
-		// The real document's certificates expired in 2025; every other test opts out of the check.
 		let mut verifier = real_attestation_verifier();
 		verifier.skip_certificate_time_check = false;
 
 		let result = verifier.verify_attestation_document(&real_attestation_bytes());
 		assert!(
-			matches!(result, Err(Error::AttestationChainInvalid(_))),
+			matches!(result, Err(Error::ChainInvalid(_))),
 			"Should reject expired certificate, got {result:?}"
 		);
 	}
@@ -747,14 +664,13 @@ mod tests {
 
 		let result = verifier.verify_attestation_document(&real_attestation_bytes());
 		assert!(
-			matches!(result, Err(Error::AttestationStale { .. })),
+			matches!(result, Err(Error::Stale { .. })),
 			"Should reject a stale attestation, got {result:?}"
 		);
 	}
 
 	#[test]
 	fn test_attestation_with_mismatched_pcrs() {
-		// PCR validation runs after the chain and signature checks, so this needs the real document.
 		let mut verifier = real_attestation_verifier();
 		verifier.allowed_pcr_configs.clear();
 		verifier.add_allowed_pcr_config(PcrConfig::new([0xAA; 48]).with_pcr(1, [0xBB; 48]));
@@ -768,16 +684,9 @@ mod tests {
 
 	#[test]
 	fn test_multiple_pcr_configurations_success() {
-		// This test verifies that PCR validation succeeds when ANY configuration matches,
-		// not requiring ALL configurations to match. This enables support for multiple
-		// enclave versions with different PCR values.
-
 		let mut verifier = real_attestation_verifier();
-
-		// Clear existing configurations
 		verifier.allowed_pcr_configs.clear();
 
-		// Add the correct PCR configuration (from the real attestation)
 		let correct_config = PcrConfig::new(hex_literal::hex!(
 			"108b32466f5dc0a9971e0bc8e3e4074e7821bb2dcad3841bdec9a08b30f173386f0394a01486df181f316b39443dab34"
 		))
@@ -800,25 +709,21 @@ mod tests {
 			),
 		);
 
-		// Add a completely different configuration (simulating a different enclave version)
-		// Each PCR value must be exactly 48 bytes (96 hex characters) for SHA-384
 		let different_config = PcrConfig::new([0xff; 48])
 			.with_pcr(1, [0xee; 48])
 			.with_pcr(2, [0xdd; 48])
 			.with_pcr(8, [0xcc; 48]);
 
-		// Add both configurations - the attestation should succeed because ONE matches
 		verifier.allowed_pcr_configs.push(different_config.clone());
 		verifier.allowed_pcr_configs.push(correct_config);
 
 		let attestation_doc_bytes = real_attestation_bytes();
 
-		// This should SUCCEED because one configuration matches
 		verifier
 			.verify_attestation_document(&attestation_doc_bytes)
-			.expect("one PCR configuration matches, so verification must succeed");
+			.expect("**one** (any) PCR configuration matches, so verification must succeed");
 
-		// Now test with ONLY non-matching configurations - should fail
+		// Now test with ONLY non-matching configurations
 		verifier.allowed_pcr_configs.clear();
 		verifier.allowed_pcr_configs.push(different_config);
 
@@ -829,16 +734,9 @@ mod tests {
 		verifier.allowed_pcr_configs.push(another_different_config);
 
 		let result = verifier.verify_attestation_document(&attestation_doc_bytes);
-
-		// This should FAIL because no configuration matches
-		assert!(
-			matches!(result, Err(Error::CodeUntrusted { .. })),
-			"Should reject attestation when no PCR configuration matches, got {result:?}"
-		);
+		assert!(matches!(result, Err(Error::CodeUntrusted { .. })));
 	}
 
-	/// The protected header is signature-covered, so a document declaring another algorithm is
-	/// rejected on the algorithm check before the P-384 verification it disagrees with.
 	#[test]
 	fn test_attestation_declaring_a_non_es384_algorithm_is_rejected() {
 		let envelope =
@@ -860,13 +758,12 @@ mod tests {
 		assert!(
 			matches!(
 				result,
-				Err(Error::AttestationSignatureInvalid(ref m)) if m.contains("ES384")
+				Err(Error::SignatureInvalid(ref m)) if m.contains("ES384")
 			),
 			"A non-ES384 algorithm must be rejected by name, got {result:?}"
 		);
 	}
 
-	/// Clocks drift; a document a few milliseconds ahead of the verifier is skew, not a forgery.
 	#[test]
 	fn test_attestation_slightly_in_the_future_is_accepted() {
 		let (doc, _) = AttestationDoc::from_bytes(&real_attestation_bytes()).expect("parses");
@@ -896,7 +793,6 @@ mod tests {
 		));
 	}
 
-	/// Supplying no configurations at all is still expressible, and must still fail closed.
 	#[test]
 	fn test_no_pcr_configuration_is_rejected() {
 		let verifier = Verifier::new(vec![], TEN_YEARS).with_skipped_certificate_time_check();
