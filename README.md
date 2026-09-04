@@ -115,11 +115,11 @@ COSE Sign1 signature, certificate chain up to the AWS Nitro root, PCR values, an
 `channel` feature turns it on, so a sealed channel keys off a verified attestation.
 
 ```rust,ignore
-use pontifex::attestation::{EnclaveAttestationVerifier, PcrMeasurement};
+use pontifex::attestation::{Verifier, PcrMeasurement};
 
 // Verification succeeds if *any* of the allowed configurations matches,
 // which allows supporting multiple enclave software versions at once.
-let verifier = EnclaveAttestationVerifier::new(vec![vec![
+let verifier = Verifier::new(vec![vec![
     PcrMeasurement::new(0, pcr0),
     PcrMeasurement::new(1, pcr1),
     PcrMeasurement::new(2, pcr2),

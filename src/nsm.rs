@@ -1,11 +1,59 @@
-pub use aws_nitro_enclaves_nsm_api::api::{AttestationDoc, Digest, ErrorCode, Request, Response};
+#[cfg(feature = "nsm")]
+pub use aws_nitro_enclaves_nsm_api::api::{ErrorCode, Request, Response};
+use std::collections::BTreeMap;
 
 use coset::{CborSerializable, CoseSign1};
+use serde::{Deserialize, Serialize};
+use serde_bytes::ByteBuf;
+
+/// The digest algorithm used for the PCR values.
+///
+/// Mirrors the NSM's own type so a client does not need `aws-nitro-enclaves-nsm-api` — and with it
+/// `libc`, `log` and the unmaintained `serde_cbor` — merely to name it. `nsm_api_compat` below
+/// fails to compile if the two ever diverge.
+#[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
+#[allow(
+	clippy::upper_case_acronyms,
+	reason = "wire format: the CBOR strings are uppercase"
+)]
+pub enum Digest {
+	/// SHA256
+	SHA256,
+	/// SHA384
+	SHA384,
+	/// SHA512
+	SHA512,
+}
+
+/// A Nitro attestation document, as carried in the payload of the COSE Sign1 envelope.
+///
+/// Field names and order are the wire format; see [`Digest`] on why this is defined here rather
+/// than borrowed from `aws-nitro-enclaves-nsm-api`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AttestationDoc {
+	/// Issuing NSM ID.
+	pub module_id: String,
+	/// The digest function used for the PCR values.
+	pub digest: Digest,
+	/// Creation time, in milliseconds since the Unix epoch.
+	pub timestamp: u64,
+	/// Every PCR locked at the moment the document was generated.
+	pub pcrs: BTreeMap<usize, ByteBuf>,
+	/// The infrastructure certificate that signed the document, DER encoded.
+	pub certificate: ByteBuf,
+	/// Issuing CA bundle for the infrastructure certificate.
+	pub cabundle: Vec<ByteBuf>,
+	/// An optional DER-encoded key the consumer can encrypt data to.
+	pub public_key: Option<ByteBuf>,
+	/// Additional signed user data, as defined by the protocol.
+	pub user_data: Option<ByteBuf>,
+	/// An optional consumer-provided nonce, proving the document was minted for this request.
+	pub nonce: Option<ByteBuf>,
+}
 
 #[cfg(feature = "nsm")]
 use {
 	aws_nitro_enclaves_nsm_api::driver::{nsm_exit, nsm_init, nsm_process_request},
-	serde_bytes::ByteBuf,
 	std::{io, os::fd::RawFd},
 	tokio::sync::OnceCell,
 };
@@ -24,6 +72,7 @@ pub struct SecureModule {
 #[derive(Debug, thiserror::Error)]
 pub enum AttestationError {
 	/// Failed to get attestation from NSM.
+	#[cfg(feature = "nsm")]
 	#[error("AttestationError::Nsm: {0:?}")]
 	Nsm(ErrorCode),
 	/// Failed to decode the CBOR payload of an attestation document.
@@ -197,13 +246,77 @@ impl Drop for SecureModule {
 	}
 }
 
+/// Proves our mirrored document types still match `aws-nitro-enclaves-nsm-api`.
+///
+/// Nothing here runs — the value is that it stops compiling if AWS adds, removes, renames or
+/// retypes a field, or adds a `Digest` variant. `aws-nitro-enclaves-nsm-api` is a dev-dependency
+/// only, so this costs a client build nothing.
+#[cfg(test)]
+mod nsm_api_compat {
+	use aws_nitro_enclaves_nsm_api::api as upstream;
+
+	use super::{AttestationDoc, Digest};
+
+	/// Exhaustive destructuring: an added, removed or renamed field fails to compile, and the
+	/// struct literal fails if any field's type changed.
+	#[allow(dead_code, reason = "exists to be type-checked, not called")]
+	fn document_is_field_for_field_identical(doc: upstream::AttestationDoc) -> AttestationDoc {
+		let upstream::AttestationDoc {
+			module_id,
+			digest,
+			timestamp,
+			pcrs,
+			certificate,
+			cabundle,
+			public_key,
+			user_data,
+			nonce,
+		} = doc;
+
+		AttestationDoc {
+			module_id,
+			digest: digest_variants_match(digest),
+			timestamp,
+			pcrs,
+			certificate,
+			cabundle,
+			public_key,
+			user_data,
+			nonce,
+		}
+	}
+
+	/// Exhaustive match: a new upstream variant fails to compile.
+	const fn digest_variants_match(digest: upstream::Digest) -> Digest {
+		match digest {
+			upstream::Digest::SHA256 => Digest::SHA256,
+			upstream::Digest::SHA384 => Digest::SHA384,
+			upstream::Digest::SHA512 => Digest::SHA512,
+		}
+	}
+
+	/// Structure matching is not encoding matching, so decode the real document both ways.
+	#[test]
+	fn the_two_types_decode_a_real_document_identically() {
+		let payload = super::parse_cose_attestation_doc(super::tests::MOCK_DOC)
+			.map(|(envelope, _)| envelope.payload.expect("fixture has a payload"))
+			.expect("fixture parses");
+
+		let ours: AttestationDoc = ciborium::from_reader(payload.as_slice()).expect("ours decodes");
+		let theirs: upstream::AttestationDoc =
+			ciborium::from_reader(payload.as_slice()).expect("upstream decodes");
+
+		assert_eq!(ours, document_is_field_for_field_identical(theirs));
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use serde_bytes::ByteBuf;
 
 	use super::*;
 
-	const MOCK_DOC: &[u8] = include_bytes!("../tests/mock-attestation-doc.cose");
+	pub(super) const MOCK_DOC: &[u8] = include_bytes!("../tests/mock-attestation-doc.cose");
 
 	/// The `mock-attestation-doc` is generated from a test Nitro enclave with some values sanitized.
 	#[test]

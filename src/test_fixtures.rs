@@ -6,7 +6,7 @@
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 
-use crate::attestation::{EnclaveAttestationVerifier, PcrMeasurement};
+use crate::attestation::{PcrMeasurement, Verifier};
 
 /// A real attestation document, base64-encoded.
 pub const REAL_ATTESTATION_DOC_B64: &str = include_str!("../tests/real-attestation-doc.b64");
@@ -26,8 +26,8 @@ pub fn real_attestation_bytes() -> Vec<u8> {
 }
 
 /// A verifier configured with the PCR values the fixture enclave actually reported.
-pub fn real_attestation_verifier() -> EnclaveAttestationVerifier {
-	let mut verifier = EnclaveAttestationVerifier::new(vec![])
+pub fn real_attestation_verifier() -> Verifier {
+	let mut verifier = Verifier::new(vec![])
 		.with_max_age(TEN_YEARS)
 		.with_skipped_certificate_time_check();
 

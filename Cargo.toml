@@ -18,16 +18,15 @@ description = "An abstraction for building and interacting with AWS Nitro enclav
 default=["http"]
 client = ["dep:tokio-vsock", "dep:rmp-serde"]
 server = ["tokio/rt", "dep:tokio-vsock", "dep:rmp-serde"]
-nsm = ["nsm-types", "aws-nitro-enclaves-nsm-api/nix", "tokio/sync"]
+nsm = ["nsm-types", "dep:aws-nitro-enclaves-nsm-api", "aws-nitro-enclaves-nsm-api/nix", "tokio/sync"]
 nsm-types = [
     "dep:coset",
     "dep:ciborium",
     "dep:serde_bytes",
-    "dep:aws-nitro-enclaves-nsm-api",
 ]
 http = ["_vsock-https"]
 channel = [
-    "attestation",
+    "nsm-types",
     "dep:sha2",
     "dep:quantum-box",
     "dep:zeroize",

@@ -21,9 +21,8 @@ use quantum_box::{PublicKey, SecretKey};
 use sha2::{Digest as _, Sha256};
 use zeroize::ZeroizeOnDrop;
 
-use crate::attestation::{
-	EnclaveAttestationError, EnclaveAttestationVerifier, VerifiedAttestation,
-};
+#[cfg(feature = "attestation")]
+use crate::attestation::{self, VerifiedAttestation, Verifier};
 
 pub use quantum_box::Error as SealedBoxError;
 pub use zeroize::Zeroizing;
@@ -69,9 +68,11 @@ pub enum ChannelError {
 	#[error("ChannelError::SealedBox: {0}")]
 	SealedBox(#[from] SealedBoxError),
 	/// The attestation carrying the enclave's public key did not verify.
+	#[cfg(feature = "attestation")]
 	#[error("ChannelError::Attestation: {0}")]
-	Attestation(#[from] EnclaveAttestationError),
+	Attestation(#[from] attestation::Error),
 	/// The attestation verified, but its `user_data` does not commit to the supplied public key.
+	#[cfg(feature = "attestation")]
 	#[error("ChannelError::KeyCommitmentMismatch")]
 	KeyCommitmentMismatch,
 }
@@ -232,9 +233,10 @@ impl ChannelConsumer {
 	///
 	/// Fails if the attestation does not verify, if it does not commit to `enclave_public_key`,
 	/// or if that key is not a valid X-Wing encapsulation key.
+	#[cfg(feature = "attestation")]
 	pub fn from_attestation(
 		domain: ChannelDomain,
-		verifier: &EnclaveAttestationVerifier,
+		verifier: &Verifier,
 		attestation_doc: &[u8],
 		enclave_public_key: &[u8],
 	) -> Result<(Self, VerifiedAttestation), ChannelError> {

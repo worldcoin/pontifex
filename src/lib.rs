@@ -91,8 +91,6 @@ mod test_fixtures;
 /// Verification of Nitro Enclave attestation documents.
 #[cfg(feature = "attestation")]
 pub mod attestation;
-#[cfg(feature = "attestation")]
-pub use attestation::{EnclaveAttestationError, EnclaveAttestationVerifier, PcrMeasurement};
 
 /// KMS functionality.
 #[cfg(feature = "kms")]

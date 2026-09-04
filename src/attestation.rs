@@ -23,7 +23,7 @@ pub const AWS_NITRO_ROOT_CERT: &[u8] = include_bytes!("aws_nitro_root_g1.der");
 
 /// Default maximum age for an attestation document.
 ///
-/// Override with [`EnclaveAttestationVerifier::with_max_age`].
+/// Override with [`Verifier::with_max_age`].
 pub const DEFAULT_MAX_ATTESTATION_AGE: Duration = Duration::from_hours(3);
 
 /// Get the expected PCR length depending on the hashing algorithm used
@@ -40,7 +40,7 @@ pub const fn get_expected_pcr_length(digest: Digest) -> usize {
 
 /// Represents errors that can occur during enclave attestation verification
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
-pub enum EnclaveAttestationError {
+pub enum Error {
 	/// Failed to parse attestation document
 	#[error("Failed to parse attestation document: {0}")]
 	AttestationDocumentParseError(String),
@@ -169,7 +169,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// - Attestation document freshness checks
 /// - Public key extraction
 #[derive(Debug)]
-pub struct EnclaveAttestationVerifier {
+pub struct Verifier {
 	/// Allowed PCR configs for validation
 	/// Each configuration is a list of (PCR index, expected value) pairs.
 	///
@@ -181,8 +181,8 @@ pub struct EnclaveAttestationVerifier {
 	skip_certificate_time_check: bool,
 }
 
-impl EnclaveAttestationVerifier {
-	/// Creates a new `EnclaveAttestationVerifier` trusting the AWS Nitro root certificate and
+impl Verifier {
+	/// Creates a new `Verifier` trusting the AWS Nitro root certificate and
 	/// [`DEFAULT_MAX_ATTESTATION_AGE`].
 	///
 	/// # Arguments
@@ -228,9 +228,9 @@ impl EnclaveAttestationVerifier {
 	pub fn verify_attestation_document_base64(
 		&self,
 		attestation_doc_base64: &str,
-	) -> Result<VerifiedAttestation, EnclaveAttestationError> {
+	) -> Result<VerifiedAttestation, Error> {
 		let attestation_doc_bytes = STANDARD.decode(attestation_doc_base64).map_err(|e| {
-			EnclaveAttestationError::AttestationDocumentParseError(format!(
+			Error::AttestationDocumentParseError(format!(
 				"Failed to decode base64 attestation document: {e}"
 			))
 		})?;
@@ -254,10 +254,10 @@ impl EnclaveAttestationVerifier {
 	pub fn verify_attestation_document(
 		&self,
 		attestation_doc_bytes: &[u8],
-	) -> Result<VerifiedAttestation, EnclaveAttestationError> {
+	) -> Result<VerifiedAttestation, Error> {
 		// 1. Syntactical validation
 		let (cose_sign1, attestation) = parse_cose_attestation_doc(attestation_doc_bytes)
-			.map_err(|e| EnclaveAttestationError::AttestationDocumentParseError(e.to_string()))?;
+			.map_err(|e| Error::AttestationDocumentParseError(e.to_string()))?;
 
 		// 2. Semantic validation
 		let leaf_cert = self.verify_certificate_chain(&attestation)?;
@@ -276,14 +276,11 @@ impl EnclaveAttestationVerifier {
 		))
 	}
 
-	fn verify_certificate_chain(
-		&self,
-		attestation: &AttestationDoc,
-	) -> Result<Certificate, EnclaveAttestationError> {
+	fn verify_certificate_chain(&self, attestation: &AttestationDoc) -> Result<Certificate, Error> {
 		let root_cert_der = self.root_certificate.as_slice();
 
 		let trust_anchor = TrustAnchor::try_from_cert_der(root_cert_der).map_err(|e| {
-			EnclaveAttestationError::AttestationChainInvalid(format!(
+			Error::AttestationChainInvalid(format!(
 				"Failed to create trust anchor from root certificate: {e}"
 			))
 		})?;
@@ -311,18 +308,14 @@ impl EnclaveAttestationVerifier {
 			webpki::Time::from_seconds_since_unix_epoch(attestation.timestamp / 1000)
 		} else {
 			let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| {
-				EnclaveAttestationError::AttestationInvalidTimestamp(format!(
-					"Failed to get current time: {e}"
-				))
+				Error::AttestationInvalidTimestamp(format!("Failed to get current time: {e}"))
 			})?;
 			webpki::Time::from_seconds_since_unix_epoch(now.as_secs())
 		};
 
 		let end_entity_cert =
 			EndEntityCert::try_from(attestation.certificate.as_slice()).map_err(|e| {
-				EnclaveAttestationError::AttestationChainInvalid(format!(
-					"Failed to parse leaf certificate: {e}"
-				))
+				Error::AttestationChainInvalid(format!("Failed to parse leaf certificate: {e}"))
 			})?;
 
 		end_entity_cert
@@ -333,48 +326,39 @@ impl EnclaveAttestationVerifier {
 				current_time,
 			)
 			.map_err(|e| {
-				EnclaveAttestationError::AttestationChainInvalid(format!(
-					"Certificate chain validation failed: {e}"
-				))
+				Error::AttestationChainInvalid(format!("Certificate chain validation failed: {e}"))
 			})?;
 
 		Certificate::from_der(&attestation.certificate).map_err(|e| {
-			EnclaveAttestationError::AttestationChainInvalid(format!(
+			Error::AttestationChainInvalid(format!(
 				"Failed to parse leaf certificate for return: {e}"
 			))
 		})
 	}
 
-	fn verify_cose_signature(
-		cose_sign1: &CoseSign1,
-		leaf_cert: &Certificate,
-	) -> Result<(), EnclaveAttestationError> {
+	fn verify_cose_signature(cose_sign1: &CoseSign1, leaf_cert: &Certificate) -> Result<(), Error> {
 		let spki = &leaf_cert.tbs_certificate.subject_public_key_info;
 		let public_key_bytes = spki.subject_public_key.as_bytes().ok_or_else(|| {
-			EnclaveAttestationError::AttestationSignatureInvalid(
-				"Failed to extract public key bytes".to_string(),
-			)
+			Error::AttestationSignatureInvalid("Failed to extract public key bytes".to_string())
 		})?;
 
 		let verifying_key = VerifyingKey::from_sec1_bytes(public_key_bytes).map_err(|e| {
-			EnclaveAttestationError::AttestationSignatureInvalid(format!(
-				"Failed to parse P-384 public key: {e}"
-			))
+			Error::AttestationSignatureInvalid(format!("Failed to parse P-384 public key: {e}"))
 		})?;
 
 		// The spec fixes the algorithm at ES384; accepting a document that declares anything else
 		// would let the header disagree with the P-384 check performed below.
 		let alg = cose_sign1.protected.header.alg.as_ref();
 		if alg != Some(&Algorithm::Assigned(iana::Algorithm::ES384)) {
-			return Err(EnclaveAttestationError::AttestationSignatureInvalid(
-				format!("Expected ES384 in the protected header, got {alg:?}"),
-			));
+			return Err(Error::AttestationSignatureInvalid(format!(
+				"Expected ES384 in the protected header, got {alg:?}"
+			)));
 		}
 
 		// coset substitutes an empty payload when there is none, which would verify a signature
 		// over a document this function never saw.
 		if cose_sign1.payload.is_none() {
-			return Err(EnclaveAttestationError::AttestationSignatureInvalid(
+			return Err(Error::AttestationSignatureInvalid(
 				"Missing payload in COSE Sign1".to_string(),
 			));
 		}
@@ -384,7 +368,7 @@ impl EnclaveAttestationVerifier {
 		// alongside the signature. Nitro attestations carry no external AAD.
 		cose_sign1.verify_signature(&[], |signature, signed_data| {
 			let ecdsa_signature = Signature::try_from(signature).map_err(|e| {
-				EnclaveAttestationError::AttestationSignatureInvalid(format!(
+				Error::AttestationSignatureInvalid(format!(
 					"Failed to parse ECDSA signature (need 96 raw bytes): {e}"
 				))
 			})?;
@@ -392,19 +376,16 @@ impl EnclaveAttestationVerifier {
 			verifying_key
 				.verify(signed_data, &ecdsa_signature)
 				.map_err(|e| {
-					EnclaveAttestationError::AttestationSignatureInvalid(format!(
+					Error::AttestationSignatureInvalid(format!(
 						"Signature verification failed: {e}"
 					))
 				})
 		})
 	}
 
-	fn validate_pcr_values(
-		&self,
-		attestation: &AttestationDoc,
-	) -> Result<(), EnclaveAttestationError> {
+	fn validate_pcr_values(&self, attestation: &AttestationDoc) -> Result<(), Error> {
 		if attestation.pcrs.is_empty() {
-			return Err(EnclaveAttestationError::CodeUntrusted {
+			return Err(Error::CodeUntrusted {
 				pcr_index: 0,
 				actual: "attestation carries no PCRs".to_string(),
 			});
@@ -429,11 +410,11 @@ impl EnclaveAttestationVerifier {
 		}
 
 		Err(first_mismatch.map_or_else(
-			|| EnclaveAttestationError::CodeUntrusted {
+			|| Error::CodeUntrusted {
 				pcr_index: 0,
 				actual: "no PCR configuration was supplied".to_string(),
 			},
-			|(pcr_index, actual)| EnclaveAttestationError::CodeUntrusted { pcr_index, actual },
+			|(pcr_index, actual)| Error::CodeUntrusted { pcr_index, actual },
 		))
 	}
 
@@ -457,22 +438,17 @@ impl EnclaveAttestationVerifier {
 		})
 	}
 
-	fn check_attestation_freshness(
-		&self,
-		attestation: &AttestationDoc,
-	) -> Result<(), EnclaveAttestationError> {
+	fn check_attestation_freshness(&self, attestation: &AttestationDoc) -> Result<(), Error> {
 		let now = u64::try_from(
 			SystemTime::now()
 				.duration_since(UNIX_EPOCH)
 				.map_err(|e| {
-					EnclaveAttestationError::AttestationInvalidTimestamp(format!(
-						"Failed to get current time: {e}"
-					))
+					Error::AttestationInvalidTimestamp(format!("Failed to get current time: {e}"))
 				})?
 				.as_millis(),
 		)
 		.map_err(|e| {
-			EnclaveAttestationError::AttestationInvalidTimestamp(format!(
+			Error::AttestationInvalidTimestamp(format!(
 				"Failed to convert current time to milliseconds: {e}"
 			))
 		})?;
@@ -483,18 +459,16 @@ impl EnclaveAttestationVerifier {
 			Some(age) => age,
 			None if attestation.timestamp - now <= CLOCK_SKEW_TOLERANCE_MILLIS => 0,
 			None => {
-				return Err(EnclaveAttestationError::AttestationInvalidTimestamp(
-					format!(
-						"Attestation timestamp is {} ms in the future",
-						attestation.timestamp - now
-					),
-				));
+				return Err(Error::AttestationInvalidTimestamp(format!(
+					"Attestation timestamp is {} ms in the future",
+					attestation.timestamp - now
+				)));
 			},
 		};
 
 		let max_age_millis = u64::try_from(self.max_age.as_millis()).unwrap_or(u64::MAX);
 		if age > max_age_millis {
-			return Err(EnclaveAttestationError::AttestationStale {
+			return Err(Error::AttestationStale {
 				age_millis: age,
 				max_age: max_age_millis,
 			});
@@ -505,7 +479,7 @@ impl EnclaveAttestationVerifier {
 }
 
 #[cfg(test)]
-impl EnclaveAttestationVerifier {
+impl Verifier {
 	/// Validates certificates against the attestation's own timestamp rather than the wall clock,
 	/// so the expired fixtures stay usable.
 	#[must_use]
@@ -581,7 +555,7 @@ mod tests {
 	/// This creates invalid attestation documents that can be used to test specific error conditions
 	fn generate_simple_fake_attestation_self_signed(
 		config: &SimpleFakeAttestationConfig,
-	) -> Result<Vec<u8>, EnclaveAttestationError> {
+	) -> Result<Vec<u8>, Error> {
 		let timestamp = config.timestamp.unwrap_or_else(|| {
 			u64::try_from(
 				SystemTime::now()
@@ -610,7 +584,7 @@ mod tests {
 
 		let mut payload = Vec::new();
 		ciborium::into_writer(&doc, &mut payload).map_err(|e| {
-			EnclaveAttestationError::AttestationDocumentParseError(format!(
+			Error::AttestationDocumentParseError(format!(
 				"Failed to serialize fake attestation document: {e}"
 			))
 		})?;
@@ -625,9 +599,7 @@ mod tests {
 		}
 		.to_vec()
 		.map_err(|e| {
-			EnclaveAttestationError::AttestationDocumentParseError(format!(
-				"Failed to encode fake COSE Sign1: {e}"
-			))
+			Error::AttestationDocumentParseError(format!("Failed to encode fake COSE Sign1: {e}"))
 		})
 	}
 
@@ -690,16 +662,13 @@ mod tests {
 		// The document is genuine; only the trust anchor is wrong.
 		let attestation = real_attestation_bytes();
 
-		let verifier = EnclaveAttestationVerifier::new(vec![])
+		let verifier = Verifier::new(vec![])
 			.with_root_certificate(untrusted_root_certificate())
 			.with_skipped_certificate_time_check();
 
 		let result = verifier.verify_attestation_document(&attestation);
 		assert!(
-			matches!(
-				result,
-				Err(EnclaveAttestationError::AttestationChainInvalid(_))
-			),
+			matches!(result, Err(Error::AttestationChainInvalid(_))),
 			"Should reject attestation that does not chain to the configured root, got {result:?}"
 		);
 	}
@@ -715,10 +684,7 @@ mod tests {
 		let result =
 			verifier.verify_attestation_document(&real_attestation_with_tampered_signature());
 		assert!(
-			matches!(
-				result,
-				Err(EnclaveAttestationError::AttestationSignatureInvalid(_))
-			),
+			matches!(result, Err(Error::AttestationSignatureInvalid(_))),
 			"Should reject a tampered signature, got {result:?}"
 		);
 	}
@@ -731,10 +697,7 @@ mod tests {
 		let result =
 			verifier.verify_attestation_document(&real_attestation_with_tampered_payload());
 		assert!(
-			matches!(
-				result,
-				Err(EnclaveAttestationError::AttestationSignatureInvalid(_))
-			),
+			matches!(result, Err(Error::AttestationSignatureInvalid(_))),
 			"Should reject a tampered payload, got {result:?}"
 		);
 	}
@@ -749,10 +712,7 @@ mod tests {
 
 		let result = verifier.verify_attestation_document(&attestation);
 		assert!(
-			matches!(
-				result,
-				Err(EnclaveAttestationError::AttestationDocumentParseError(_))
-			),
+			matches!(result, Err(Error::AttestationDocumentParseError(_))),
 			"Should reject unsigned trailing data, got {result:?}"
 		);
 	}
@@ -761,15 +721,11 @@ mod tests {
 	fn test_attestation_with_an_unparseable_leaf_certificate_is_rejected() {
 		let fake_attestation = generate_fake_attestation_invalid_cert_chain();
 
-		let verifier =
-			EnclaveAttestationVerifier::new(vec![]).with_skipped_certificate_time_check();
+		let verifier = Verifier::new(vec![]).with_skipped_certificate_time_check();
 
 		let result = verifier.verify_attestation_document(&fake_attestation);
 		assert!(
-			matches!(
-				result,
-				Err(EnclaveAttestationError::AttestationChainInvalid(_))
-			),
+			matches!(result, Err(Error::AttestationChainInvalid(_))),
 			"Should reject invalid certificate chain, got {result:?}"
 		);
 	}
@@ -782,10 +738,7 @@ mod tests {
 
 		let result = verifier.verify_attestation_document(&real_attestation_bytes());
 		assert!(
-			matches!(
-				result,
-				Err(EnclaveAttestationError::AttestationChainInvalid(_))
-			),
+			matches!(result, Err(Error::AttestationChainInvalid(_))),
 			"Should reject expired certificate, got {result:?}"
 		);
 	}
@@ -797,10 +750,7 @@ mod tests {
 
 		let result = verifier.verify_attestation_document(&real_attestation_bytes());
 		assert!(
-			matches!(
-				result,
-				Err(EnclaveAttestationError::AttestationStale { .. })
-			),
+			matches!(result, Err(Error::AttestationStale { .. })),
 			"Should reject a stale attestation, got {result:?}"
 		);
 	}
@@ -817,7 +767,7 @@ mod tests {
 
 		let result = verifier.verify_attestation_document(&real_attestation_bytes());
 		assert!(
-			matches!(result, Err(EnclaveAttestationError::CodeUntrusted { .. })),
+			matches!(result, Err(Error::CodeUntrusted { .. })),
 			"Should reject mismatched PCR values, got {result:?}"
 		);
 	}
@@ -897,7 +847,7 @@ mod tests {
 
 		// This should FAIL because no configuration matches
 		assert!(
-			matches!(result, Err(EnclaveAttestationError::CodeUntrusted { .. })),
+			matches!(result, Err(Error::CodeUntrusted { .. })),
 			"Should reject attestation when no PCR configuration matches, got {result:?}"
 		);
 	}
@@ -906,13 +856,13 @@ mod tests {
 	/// and silently turns PCR pinning off.
 	#[test]
 	fn test_empty_pcr_configuration_does_not_match() {
-		let verifier = EnclaveAttestationVerifier::new(vec![vec![]])
+		let verifier = Verifier::new(vec![vec![]])
 			.with_max_age(TEN_YEARS)
 			.with_skipped_certificate_time_check();
 
 		let result = verifier.verify_attestation_document(&real_attestation_bytes());
 		assert!(
-			matches!(result, Err(EnclaveAttestationError::CodeUntrusted { .. })),
+			matches!(result, Err(Error::CodeUntrusted { .. })),
 			"An empty PCR configuration must not satisfy the policy, got {result:?}"
 		);
 	}
@@ -940,7 +890,7 @@ mod tests {
 		assert!(
 			matches!(
 				result,
-				Err(EnclaveAttestationError::AttestationSignatureInvalid(ref m)) if m.contains("ES384")
+				Err(Error::AttestationSignatureInvalid(ref m)) if m.contains("ES384")
 			),
 			"A non-ES384 algorithm must be rejected by name, got {result:?}"
 		);
@@ -950,10 +900,7 @@ mod tests {
 	fn test_base64_input_that_is_not_base64_is_rejected() {
 		let result = real_attestation_verifier().verify_attestation_document_base64("not base64!!");
 		assert!(
-			matches!(
-				result,
-				Err(EnclaveAttestationError::AttestationDocumentParseError(_))
-			),
+			matches!(result, Err(Error::AttestationDocumentParseError(_))),
 			"got {result:?}"
 		);
 	}
@@ -985,7 +932,7 @@ mod tests {
 		far_future.timestamp = now + 10 * 60 * 1_000;
 		assert!(matches!(
 			verifier.check_attestation_freshness(&far_future),
-			Err(EnclaveAttestationError::AttestationInvalidTimestamp(_))
+			Err(Error::AttestationInvalidTimestamp(_))
 		));
 	}
 }
