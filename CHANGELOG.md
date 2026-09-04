@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1](https://github.com/worldcoin/pontifex/compare/2.0.0...2.0.1) - 2026-09-04
+
+### Other
+
+- *(deps)* update aws-nitro-enclaves-nsm-api requirement ([#39](https://github.com/worldcoin/pontifex/pull/39))
+
 ## [2.0.0](https://github.com/worldcoin/pontifex/compare/1.2.0...2.0.0) - 2026-09-04
 
 ### Added
