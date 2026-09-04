@@ -15,6 +15,9 @@ use crate::nsm::{AttestationDoc, Digest};
 /// Stored at `src/aws_nitro_root_g1.der`
 pub const AWS_NITRO_ROOT_CERT: &[u8] = include_bytes!("aws_nitro_root_g1.der");
 
+/// The largest attestation document the spec allows
+const MAX_DOCUMENT_BYTES: usize = 16384;
+
 /// The PCR holding the hash of the enclave image file, which is what pins the code being run.
 ///
 /// Reference: <https://docs.aws.amazon.com/enclaves/latest/user/set-up-attestation.html#where>
@@ -134,7 +137,7 @@ impl Verifier {
 	/// Sets the DER-encoded root certificate the attestation chain must chain up to.
 	///
 	/// # Warning
-	/// This completely changes the roof of trust. Don't use unless you know what you're doing.
+	/// This completely changes the root of trust. Don't use unless you know what you're doing.
 	#[must_use]
 	pub fn with_root_certificate(mut self, root_certificate: Vec<u8>) -> Self {
 		self.root_certificate = root_certificate;
@@ -151,6 +154,13 @@ impl Verifier {
 		&self,
 		attestation_doc_bytes: &[u8],
 	) -> Result<VerifiedAttestation, Error> {
+		if attestation_doc_bytes.len() > MAX_DOCUMENT_BYTES {
+			return Err(Error::ParseError(format!(
+				"Attestation document is {} bytes, over the {MAX_DOCUMENT_BYTES}-byte maximum",
+				attestation_doc_bytes.len()
+			)));
+		}
+
 		// 1. Syntactical validation
 		let (attestation, cose_sign1) = AttestationDoc::from_bytes(attestation_doc_bytes)
 			.map_err(|e| Error::ParseError(e.to_string()))?;
@@ -801,6 +811,22 @@ mod tests {
 		assert!(
 			matches!(result, Err(Error::CodeUntrusted { .. })),
 			"A verifier with no PCR configuration must reject, got {result:?}"
+		);
+	}
+
+	#[test]
+	fn test_an_oversized_document_is_rejected_before_parsing() {
+		let mut oversized = real_attestation_bytes();
+		assert!(
+			oversized.len() < MAX_DOCUMENT_BYTES,
+			"fixture is within the limit"
+		);
+		oversized.resize(MAX_DOCUMENT_BYTES + 1, 0);
+
+		let result = real_attestation_verifier().verify_attestation_document(&oversized);
+		assert!(
+			matches!(result, Err(Error::ParseError(ref m)) if m.contains("maximum")),
+			"got {result:?}"
 		);
 	}
 }

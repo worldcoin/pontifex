@@ -36,7 +36,7 @@ pub struct AttestationDoc {
 	pub certificate: ByteBuf,
 	/// Issuing CA bundle for the infrastructure certificate.
 	pub cabundle: Vec<ByteBuf>,
-	/// An optional DER-encoded key the consumer can encrypt data to.
+	/// Representation of a public key used to encrypt data to the enclave.
 	pub public_key: Option<ByteBuf>,
 	/// Additional signed user data, as defined by the protocol.
 	pub user_data: Option<ByteBuf>,
@@ -181,7 +181,7 @@ impl SecureModule {
 		public_key: Option<impl Into<Vec<u8>>>,
 	) -> Result<AttestationDoc, AttestationError> {
 		let document = self.raw_attest(user_data, nonce, public_key)?;
-		let (doc, _sig) = AttestationDoc::from_bytes(&document)?; // signatature not verified here
+		let (doc, _sig) = AttestationDoc::from_bytes(&document)?; // signature not verified here
 		Ok(doc)
 	}
 
