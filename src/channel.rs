@@ -16,6 +16,8 @@
 //!   verified attestation. [`ChannelConsumer::from_unverified_public_key`] skips that check.
 //! 4. This system does not offer direct replay protection for requests (e.g. a malicious host could inject
 //!   the same ciphertext multiple times). Add a separate mechanism if your trust assumptions require this.
+//! 5. The enclave attests the key commitment in the document's `public_key` field, so
+//!   `user_data` (512 bytes) and `nonce` (512 bytes) stay entirely yours.
 
 use quantum_box::{PublicKey, SecretKey};
 use sha2::{Digest as _, Sha256};
@@ -30,28 +32,9 @@ pub use zeroize::Zeroizing;
 /// Length of an X-Wing encapsulation key: ML-KEM-768 (1184) plus X25519 (32).
 const RESPONSE_KEY_LEN: usize = 1216;
 
-/// Domain separator for [`public_key_commitment`], versioned so a future commitment format
-/// cannot be mistaken for this one.
+/// Domain separator for [`public_key_commitment`].
 const COMMITMENT_DOMAIN: &[u8] = b"pontifex/public-key-commitment/v1\0";
 
-/// Returns the 32-byte commitment to `public_key`.
-///
-/// An X-Wing key is 1216 bytes and does not fit the attestation document's 1024-byte `public_key`
-/// field, so the enclave attests this instead and hands the key over alongside the document.
-///
-/// Computes `SHA-256(domain || public_key)` over the raw key bytes, before any transport encoding.
-/// The domain separator is what stops a digest computed for some other purpose — `user_data` is a
-/// free-form field — being replayed as a commitment to an attacker's key.
-#[must_use]
-pub fn public_key_commitment(public_key: &[u8]) -> [u8; 32] {
-	Sha256::new()
-		.chain_update(COMMITMENT_DOMAIN)
-		.chain_update(public_key)
-		.finalize()
-		.into()
-}
-
-// Bound into the `info` so one key is never used for both directions.
 const REQUEST: u8 = 0;
 const RESPONSE: u8 = 1;
 
@@ -67,14 +50,18 @@ pub enum ChannelError {
 	/// A key, a seal, or an unseal failed.
 	#[error("ChannelError::SealedBox: {0}")]
 	SealedBox(#[from] SealedBoxError),
-	/// The attestation carrying the enclave's public key did not verify.
+	/// Unable to verify the enclave's attestation.
 	#[cfg(feature = "attestation")]
 	#[error("ChannelError::Attestation: {0}")]
 	Attestation(#[from] attestation::Error),
-	/// The attestation verified, but its `user_data` does not commit to the supplied public key.
+	/// Key commitment in attestation does not match the provided public key.
 	#[cfg(feature = "attestation")]
 	#[error("ChannelError::KeyCommitmentMismatch")]
 	KeyCommitmentMismatch,
+	/// The enclave's attestation does not contain a committed public key.
+	#[cfg(feature = "attestation")]
+	#[error("ChannelError::PublicKeyEmpty")]
+	EmptyPublicKey,
 }
 
 /// The protocol name bound into every seal on a channel.
@@ -133,9 +120,7 @@ impl ChannelEnclave {
 		self.secret_key.public_key().to_bytes()
 	}
 
-	/// The commitment to [`Self::public_key`] to attest in the document's `user_data`.
-	///
-	/// The key itself does not fit the NSM's 1024-byte `public_key` field; this does.
+	/// Commitment to [`Self::public_key`] to be attested.
 	#[must_use]
 	pub fn public_key_commitment(&self) -> [u8; 32] {
 		public_key_commitment(&self.public_key())
@@ -169,6 +154,19 @@ impl ChannelEnclave {
 			},
 		))
 	}
+}
+
+/// Commitment to a `public_key`.
+///
+/// # Rationale
+/// A commitment is used instead of raw key because X-Wing's pk exceeds max size.
+#[must_use]
+pub fn public_key_commitment(public_key: &[u8]) -> [u8; 32] {
+	Sha256::new()
+		.chain_update(COMMITMENT_DOMAIN)
+		.chain_update(public_key)
+		.finalize()
+		.into()
 }
 
 /// Seals a one-time response back to the consumer.
@@ -221,13 +219,8 @@ impl std::fmt::Debug for ChannelConsumer {
 }
 
 impl ChannelConsumer {
-	/// Verifies `attestation_doc`, checks that it commits to `enclave_public_key`, and builds a
-	/// consumer sealing to that key.
-	///
-	/// This is the constructor to reach for. The key is too large for the attestation document's
-	/// `public_key` field, so the enclave attests
-	/// [`ChannelEnclave::public_key_commitment`] in `user_data` and returns the key alongside the
-	/// document; verifying the two together is what makes the key trustworthy.
+	/// Initializes a channel from an enclave's public key and its attestation. Verifies the public
+	/// key is properly attested by the enclave.
 	///
 	/// # Errors
 	///
@@ -243,9 +236,14 @@ impl ChannelConsumer {
 		let attestation = verifier.verify_attestation_document(attestation_doc)?;
 
 		let expected = public_key_commitment(enclave_public_key);
-		let user_data = attestation.document().user_data.as_ref();
-		if user_data.map(|data| data.as_slice()) != Some(expected.as_slice()) {
-			return Err(ChannelError::KeyCommitmentMismatch);
+		let attested = attestation.document().public_key.as_ref();
+
+		if let Some(attested) = attested {
+			if attested.as_slice() != expected {
+				return Err(ChannelError::KeyCommitmentMismatch);
+			}
+		} else {
+			return Err(ChannelError::EmptyPublicKey);
 		}
 
 		let consumer = Self {
@@ -642,8 +640,9 @@ mod tests {
 		assert!(matches!(err, ChannelError::Attestation(_)), "got {err:?}");
 	}
 
-	/// The fixture's `user_data` is empty, so it commits to no key at all — which is exactly what
-	/// an attacker replaying a genuine document alongside their own key would present.
+	/// The fixture attests a raw 32-byte key rather than a commitment, so it commits to no channel
+	/// key at all — exactly what an attacker replaying a genuine document beside their own key
+	/// would present.
 	#[test]
 	fn from_attestation_rejects_a_key_the_document_does_not_commit_to() {
 		let err = ChannelConsumer::from_attestation(
@@ -696,8 +695,8 @@ mod tests {
 		);
 	}
 
-	/// `user_data` is a free-form field, so a bare digest computed there for another purpose could
-	/// otherwise be replayed as a commitment to an attacker's key.
+	/// The document's byte-string fields are free-form, so a bare digest written to one for another
+	/// purpose could otherwise be replayed as a commitment to an attacker's key.
 	#[test]
 	fn the_domain_separator_is_covered() {
 		use sha2::{Digest as _, Sha256};

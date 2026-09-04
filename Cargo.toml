@@ -25,12 +25,15 @@ nsm-types = [
     "dep:serde_bytes",
 ]
 http = ["_vsock-https"]
+
+# Utilities to establish an E2EE channel between an end consumer and the enclave.
 channel = [
     "nsm-types",
     "dep:sha2",
     "dep:quantum-box",
     "dep:zeroize",
 ]
+
 kms = [
     "_vsock-https",
     "dep:aws-types",

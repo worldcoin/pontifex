@@ -70,6 +70,62 @@ let connection = ConnectionDetails::new(ENCLAVE_CID, ENCLAVE_PORT);
 let response: HealthStatus = send(connection, &HealthCheck).await?;
 ```
 
+### Attestation Verification
+
+The `attestation` feature allows a consumer to check an attestation issued by the NSM of a Nitro Enclave. It is what the `channel` feature uses underneath to verify public keys are attested but using this module directly enables a consumer to receive arbitrarily attested data.
+
+```rust,ignore
+use pontifex::attestation::{PcrConfig, Verifier};
+use std::time::Duration;
+
+// Verification succeeds if *any* of the allowed configurations matches, which allows
+// supporting multiple enclave software versions at once. There is no default freshness
+// window: only you know how the document reaches you and how long a replay stays useful.
+let verifier = Verifier::new(
+    vec![PcrConfig::new(pcr0).with_pcr(1, pcr1).with_pcr(2, pcr2)],
+    Duration::from_secs(3 * 60 * 60),
+);
+
+// Takes the raw COSE bytes: how the document reached you is your protocol's business.
+let attestation = verifier.verify_attestation_document(&attestation_doc)?;
+println!("enclave module: {}", attestation.document().module_id);
+```
+
+`VerifiedAttestation` wraps the whole signed document — `nonce`, `user_data`, PCRs and all — and
+only the verifier can construct one, so the type is itself proof the document was checked.
+
+#### Choosing PCRs
+
+PCR0, the hash of the whole enclave image, is a required argument to `PcrConfig::new` rather than
+an entry in a list — a configuration that pins no code identity does not compile. Every other PCR
+is optional. Listing several configurations means "any one of these releases", and each is matched
+in full, so values from different releases can never be mixed.
+
+| PCR | measures | pin it? |
+| --- | --- | --- |
+| 0 | the entire enclave image | **required** |
+| 1 | kernel and bootstrap | usually |
+| 2 | application ramdisk | usually |
+| 3 | parent IAM role | only to tie the enclave to one role |
+| 4 | parent instance ID | rarely — this pins one EC2 instance |
+| 8 | enclave image signing certificate | if you sign your enclaves |
+
+PCRs you do not list are not checked. PCR0 already covers the image as a whole, so pinning 1 and 2
+alongside it is defence in depth rather than a separate guarantee.
+
+#### Field sizes
+
+The document has three application-controlled fields, and they are not the same size:
+
+| field | limit | used by |
+| --- | --- | --- |
+| `public_key` | 1024 bytes | `channel`, for its key commitment |
+| `user_data` | 512 bytes | yours |
+| `nonce` | 512 bytes | yours, for replay protection |
+
+A key of 1024 bytes or less goes straight in `public_key` and needs no commitment. `channel` only
+uses one because an X-Wing key is 1216 bytes.
+
 ### Sealed Channel
 
 The `channel` feature allows establishing an end-to-end encrypted channel, so a client can send data directly to the enclave without anyone else (chiefly the untrusted parent host) being able to read it. Every message is a [`quantum-box`](https://docs.rs/quantum-box) sealed box over X-Wing, a hybrid post-quantum KEM.
@@ -84,18 +140,17 @@ use pontifex::{SecureModule, channel::{ChannelConsumer, ChannelDomain, ChannelEn
 // The name is the only lever for a breaking wire change, so carry a version in it.
 const DOMAIN: ChannelDomain = ChannelDomain::new("my-protocol/match_v1");
 
-// Enclave (usually once per boot). The X-Wing key is larger than the attestation document's
-// `public_key` field allows, so attest its commitment and hand the key out alongside.
+// Enclave (usually once per boot): generate a channel key and attest a commitment to it.
 let enclave = ChannelEnclave::generate(DOMAIN)?;
 let attestation_doc = SecureModule::global().raw_attest(
-    Some(enclave.public_key_commitment()), // user_data
-    None::<Vec<u8>>,
-    None::<Vec<u8>>,
+    None::<Vec<u8>>,                       // user_data — left free for your protocol
+    None::<Vec<u8>>,                       // nonce
+    Some(enclave.public_key_commitment()), // public_key
 )?;
 let enclave_public_key = enclave.public_key();
 
-// End consumer: one call verifies the attestation, checks it commits to this key, and
-// builds the consumer. There is no way to skip the check and still get a consumer.
+// End consumer: `verifier` is the one built above. This single call verifies the document,
+// checks it commits to this key, and hands back the channel — the check cannot be skipped.
 let (consumer, attestation) =
     ChannelConsumer::from_attestation(DOMAIN, &verifier, &attestation_doc, &enclave_public_key)?;
 let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;
@@ -104,37 +159,9 @@ let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;
 let (plaintext, sealer) = enclave.open(&sealed_request)?;
 let sealed_response = sealer.seal(b"result")?;
 
-// End consumer: only this opener can open that response.
+// End consumer: open the enclave's response.
 let result = opener.open_from_enclave(&sealed_response)?;
 ```
-
-### Attestation Verification
-
-Outside the enclave, the `attestation` feature checks an attestation document produced by the NSM:
-COSE Sign1 signature, certificate chain up to the AWS Nitro root, PCR values, and freshness. The
-`channel` feature turns it on, so a sealed channel keys off a verified attestation.
-
-```rust,ignore
-use pontifex::attestation::{Verifier, PcrMeasurement};
-
-// Verification succeeds if *any* of the allowed configurations matches,
-// which allows supporting multiple enclave software versions at once.
-let verifier = Verifier::new(vec![vec![
-    PcrMeasurement::new(0, pcr0),
-    PcrMeasurement::new(1, pcr1),
-    PcrMeasurement::new(2, pcr2),
-]]);
-
-// Defaults to a three-hour freshness window; override with `.with_max_age(..)`.
-// Takes the raw COSE bytes: how the document reached you is your protocol's business.
-let attestation = verifier.verify_attestation_document(&attestation_doc)?;
-println!("enclave module: {}", attestation.document().module_id);
-```
-
-`VerifiedAttestation` wraps the whole signed document — `nonce`, `user_data`, PCRs and all —
-and only the verifier can construct one, so the type is itself proof the document was checked. Binding a key too large for the document's
-1024-byte `public_key` field is what `channel` does with
-`pontifex::channel::public_key_commitment`; see below.
 
 ## Releases
 

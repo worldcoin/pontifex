@@ -19,10 +19,12 @@ use crate::nsm::{AttestationDoc, Digest, parse_cose_attestation_doc};
 /// Stored at `src/aws_nitro_root_g1.der`
 pub const AWS_NITRO_ROOT_CERT: &[u8] = include_bytes!("aws_nitro_root_g1.der");
 
-/// Default maximum age for an attestation document.
-///
-/// Override with [`Verifier::with_max_age`].
-pub const DEFAULT_MAX_ATTESTATION_AGE: Duration = Duration::from_hours(3);
+/// The PCR holding the hash of the enclave image file, which is what pins the code being run.
+pub const PCR_ENCLAVE_IMAGE: u32 = 0;
+
+/// Length of a Nitro PCR value. The attestation spec fixes the digest at SHA-384, and the
+/// verifier already hardcodes `ECDSA_P384_SHA384` for the certificate chain.
+pub const PCR_LENGTH: usize = 48;
 
 /// Get the expected PCR length depending on the hashing algorithm used
 /// As of right now, only SHA-384 is used
@@ -114,6 +116,56 @@ pub struct PcrMeasurement {
 	pub value: Vec<u8>,
 }
 
+/// One accepted enclave build.
+///
+/// ```compile_fail,E0061
+/// # use pontifex::attestation::PcrConfig;
+/// let config = PcrConfig::new(); // PCR0 is not optional
+/// ```
+///
+/// PCR0 is a field rather than a list entry, so a configuration that pins no code identity cannot
+/// be constructed. Every other PCR is optional — which ones matter is yours to decide, and PCR3
+/// and PCR4 (IAM role, instance ID) are usually wrong to pin at all.
+#[derive(Clone, Debug)]
+pub struct PcrConfig {
+	enclave_image: [u8; PCR_LENGTH],
+	additional: Vec<PcrMeasurement>,
+}
+
+impl PcrConfig {
+	/// Pins PCR0, the SHA-384 hash of the whole enclave image.
+	#[must_use]
+	pub const fn new(enclave_image: [u8; PCR_LENGTH]) -> Self {
+		Self {
+			enclave_image,
+			additional: Vec::new(),
+		}
+	}
+
+	/// Also pins `index`. Passing [`PCR_ENCLAVE_IMAGE`] replaces the image measurement, so there
+	/// is only ever one value for it.
+	#[must_use]
+	pub fn with_pcr(mut self, index: u32, value: impl Into<Vec<u8>>) -> Self {
+		let value = value.into();
+		if index == PCR_ENCLAVE_IMAGE {
+			if let Ok(image) = <[u8; PCR_LENGTH]>::try_from(value.as_slice()) {
+				self.enclave_image = image;
+			}
+			return self;
+		}
+		self.additional.push(PcrMeasurement::new(index, value));
+		self
+	}
+
+	fn measurements(&self) -> impl Iterator<Item = (u32, &[u8])> {
+		std::iter::once((PCR_ENCLAVE_IMAGE, self.enclave_image.as_slice())).chain(
+			self.additional
+				.iter()
+				.map(|m| (m.index, m.value.as_slice())),
+		)
+	}
+}
+
 impl PcrMeasurement {
 	/// Creates a new `PcrMeasurement`
 	///
@@ -154,7 +206,7 @@ pub struct Verifier {
 	/// Each configuration is a list of (PCR index, expected value) pairs.
 	///
 	/// This allows for supporting multiple enclave software versions.
-	allowed_pcr_configs: Vec<Vec<PcrMeasurement>>,
+	allowed_pcr_configs: Vec<PcrConfig>,
 	root_certificate: Vec<u8>,
 	max_age: Duration,
 	#[cfg(test)]
@@ -162,28 +214,23 @@ pub struct Verifier {
 }
 
 impl Verifier {
-	/// Creates a new `Verifier` trusting the AWS Nitro root certificate and
-	/// [`DEFAULT_MAX_ATTESTATION_AGE`].
+	/// Creates a new `Verifier` trusting the AWS Nitro root certificate.
 	///
 	/// # Arguments
-	/// * `allowed_pcr_configs` - Allowed PCR configurations. Verification succeeds if *any*
-	///   configuration matches, which allows supporting multiple enclave software versions.
+	/// * `allowed_pcr_configs` - Allowed PCR configurations. Verification succeeds if *any* one
+	///   matches in full, which is how several enclave software versions are supported at once.
+	/// * `max_age` - How old a document may be before it is rejected as stale. There is no
+	///   default: the right window depends on how the document reaches you and how long a replay
+	///   would stay useful, which only the caller knows.
 	#[must_use]
-	pub fn new(allowed_pcr_configs: Vec<Vec<PcrMeasurement>>) -> Self {
+	pub fn new(allowed_pcr_configs: Vec<PcrConfig>, max_age: Duration) -> Self {
 		Self {
 			allowed_pcr_configs,
 			root_certificate: AWS_NITRO_ROOT_CERT.to_vec(),
-			max_age: DEFAULT_MAX_ATTESTATION_AGE,
+			max_age,
 			#[cfg(test)]
 			skip_certificate_time_check: false,
 		}
-	}
-
-	/// Sets how old an attestation document may be before it is rejected as stale.
-	#[must_use]
-	pub const fn with_max_age(mut self, max_age: Duration) -> Self {
-		self.max_age = max_age;
-		self
 	}
 
 	/// Sets the DER-encoded root certificate the attestation chain must chain up to.
@@ -342,47 +389,38 @@ impl Verifier {
 
 		let expected_length = get_expected_pcr_length(attestation.digest);
 
-		// An empty configuration compares nothing, so it would match every attestation and
-		// silently disable PCR pinning. Never let one satisfy the policy.
-		let configs = self
-			.allowed_pcr_configs
-			.iter()
-			.filter(|config| !config.is_empty());
-
 		// Supporting several enclave software versions at once means any one config may match.
+		// Each `PcrConfig` necessarily pins PCR0, so none of them can match vacuously.
 		let mut first_mismatch = None;
-		for config in configs {
+		for config in &self.allowed_pcr_configs {
 			match Self::first_mismatch(attestation, config, expected_length) {
 				None => return Ok(()),
 				Some(mismatch) => first_mismatch.get_or_insert(mismatch),
 			};
 		}
 
-		Err(first_mismatch.map_or_else(
-			|| Error::CodeUntrusted {
-				pcr_index: 0,
-				actual: "no PCR configuration was supplied".to_string(),
-			},
-			|(pcr_index, actual)| Error::CodeUntrusted { pcr_index, actual },
-		))
+		let (pcr_index, actual) = first_mismatch.unwrap_or_else(|| {
+			(
+				PCR_ENCLAVE_IMAGE,
+				"no PCR configuration was supplied".to_string(),
+			)
+		});
+		Err(Error::CodeUntrusted { pcr_index, actual })
 	}
 
 	/// The first PCR in `config` that the attestation does not satisfy, as `(index, actual)`.
 	fn first_mismatch(
 		attestation: &AttestationDoc,
-		config: &[PcrMeasurement],
+		config: &PcrConfig,
 		expected_length: usize,
 	) -> Option<(u32, String)> {
-		config.iter().find_map(|measurement| {
-			let actual = attestation.pcrs.get(&(measurement.index as usize));
-			match actual {
-				Some(value)
-					if value.len() == expected_length && value.as_slice() == measurement.value =>
-				{
+		config.measurements().find_map(|(index, expected)| {
+			match attestation.pcrs.get(&(index as usize)) {
+				Some(value) if value.len() == expected_length && value.as_slice() == expected => {
 					None
 				},
-				Some(value) => Some((measurement.index, hex_encode(value))),
-				None => Some((measurement.index, "missing".to_string())),
+				Some(value) => Some((index, hex_encode(value))),
+				None => Some((index, "missing".to_string())),
 			}
 		})
 	}
@@ -438,7 +476,7 @@ impl Verifier {
 	}
 
 	/// Adds a custom PCR configuration, used for testing.
-	pub fn add_allowed_pcr_config(&mut self, pcr_config: Vec<PcrMeasurement>) {
+	pub fn add_allowed_pcr_config(&mut self, pcr_config: PcrConfig) {
 		self.allowed_pcr_configs.push(pcr_config);
 	}
 }
@@ -455,7 +493,8 @@ mod tests {
 
 	use super::*;
 	use crate::test_fixtures::{
-		ATTESTED_PUBLIC_KEY, TEN_YEARS, real_attestation_bytes, real_attestation_verifier,
+		ATTESTED_PUBLIC_KEY, TEN_YEARS, pcr0_only, real_attestation_bytes,
+		real_attestation_verifier, real_attestation_verifier_with_max_age,
 	};
 
 	// This tests verifies a real attestation document with real PCR values.
@@ -615,7 +654,7 @@ mod tests {
 		// The document is genuine; only the trust anchor is wrong.
 		let attestation = real_attestation_bytes();
 
-		let verifier = Verifier::new(vec![])
+		let verifier = Verifier::new(vec![pcr0_only()], TEN_YEARS)
 			.with_root_certificate(untrusted_root_certificate())
 			.with_skipped_certificate_time_check();
 
@@ -674,7 +713,8 @@ mod tests {
 	fn test_attestation_with_an_unparseable_leaf_certificate_is_rejected() {
 		let fake_attestation = generate_fake_attestation_invalid_cert_chain();
 
-		let verifier = Verifier::new(vec![]).with_skipped_certificate_time_check();
+		let verifier =
+			Verifier::new(vec![pcr0_only()], TEN_YEARS).with_skipped_certificate_time_check();
 
 		let result = verifier.verify_attestation_document(&fake_attestation);
 		assert!(
@@ -698,8 +738,7 @@ mod tests {
 
 	#[test]
 	fn test_attestation_that_is_stale() {
-		let verifier = real_attestation_verifier();
-		let verifier = verifier.with_max_age(Duration::from_mins(1));
+		let verifier = real_attestation_verifier_with_max_age(Duration::from_mins(1));
 
 		let result = verifier.verify_attestation_document(&real_attestation_bytes());
 		assert!(
@@ -713,10 +752,7 @@ mod tests {
 		// PCR validation runs after the chain and signature checks, so this needs the real document.
 		let mut verifier = real_attestation_verifier();
 		verifier.allowed_pcr_configs.clear();
-		verifier.add_allowed_pcr_config(vec![
-			PcrMeasurement::new(0, [0xAA; 48]),
-			PcrMeasurement::new(1, [0xBB; 48]),
-		]);
+		verifier.add_allowed_pcr_config(PcrConfig::new([0xAA; 48]).with_pcr(1, [0xBB; 48]));
 
 		let result = verifier.verify_attestation_document(&real_attestation_bytes());
 		assert!(
@@ -737,41 +773,34 @@ mod tests {
 		verifier.allowed_pcr_configs.clear();
 
 		// Add the correct PCR configuration (from the real attestation)
-		let correct_config = vec![
-			PcrMeasurement::new(
-				0,
-				hex_literal::hex!(
-					"108b32466f5dc0a9971e0bc8e3e4074e7821bb2dcad3841bdec9a08b30f173386f0394a01486df181f316b39443dab34"
-				),
+		let correct_config = PcrConfig::new(hex_literal::hex!(
+			"108b32466f5dc0a9971e0bc8e3e4074e7821bb2dcad3841bdec9a08b30f173386f0394a01486df181f316b39443dab34"
+		))
+		.with_pcr(
+			1,
+			hex_literal::hex!(
+				"4b4d5b3661b3efc12920900c80e126e4ce783c522de6c02a2a5bf7af3a2b9327b86776f188e4be1c1c404a129dbda493"
 			),
-			PcrMeasurement::new(
-				1,
-				hex_literal::hex!(
-					"4b4d5b3661b3efc12920900c80e126e4ce783c522de6c02a2a5bf7af3a2b9327b86776f188e4be1c1c404a129dbda493"
-				),
+		)
+		.with_pcr(
+			2,
+			hex_literal::hex!(
+				"08c6b2cba2d0c0ab63f3533cb44e092fb211775323cd62cd571f871e127ae1844f0e948a54ba58ecd29fbe03a64d5edc"
 			),
-			PcrMeasurement::new(
-				2,
-				hex_literal::hex!(
-					"08c6b2cba2d0c0ab63f3533cb44e092fb211775323cd62cd571f871e127ae1844f0e948a54ba58ecd29fbe03a64d5edc"
-				),
+		)
+		.with_pcr(
+			8,
+			hex_literal::hex!(
+				"b38251662033340b540c2d7e5f49e7ec6d10afcb5f17c72132e20a7f0a54576dc4d2c6ce062ed2ed2b6ae01815d69c8d"
 			),
-			PcrMeasurement::new(
-				8,
-				hex_literal::hex!(
-					"b38251662033340b540c2d7e5f49e7ec6d10afcb5f17c72132e20a7f0a54576dc4d2c6ce062ed2ed2b6ae01815d69c8d"
-				),
-			),
-		];
+		);
 
 		// Add a completely different configuration (simulating a different enclave version)
 		// Each PCR value must be exactly 48 bytes (96 hex characters) for SHA-384
-		let different_config = vec![
-			PcrMeasurement::new(0, [0xff; 48]),
-			PcrMeasurement::new(1, [0xee; 48]),
-			PcrMeasurement::new(2, [0xdd; 48]),
-			PcrMeasurement::new(8, [0xcc; 48]),
-		];
+		let different_config = PcrConfig::new([0xff; 48])
+			.with_pcr(1, [0xee; 48])
+			.with_pcr(2, [0xdd; 48])
+			.with_pcr(8, [0xcc; 48]);
 
 		// Add both configurations - the attestation should succeed because ONE matches
 		verifier.allowed_pcr_configs.push(different_config.clone());
@@ -788,12 +817,10 @@ mod tests {
 		verifier.allowed_pcr_configs.clear();
 		verifier.allowed_pcr_configs.push(different_config);
 
-		let another_different_config = vec![
-			PcrMeasurement::new(0, [0xaa; 48]),
-			PcrMeasurement::new(1, [0xbb; 48]),
-			PcrMeasurement::new(2, [0x11; 48]),
-			PcrMeasurement::new(8, [0x22; 48]),
-		];
+		let another_different_config = PcrConfig::new([0xaa; 48])
+			.with_pcr(1, [0xbb; 48])
+			.with_pcr(2, [0x11; 48])
+			.with_pcr(8, [0x22; 48]);
 		verifier.allowed_pcr_configs.push(another_different_config);
 
 		let result = verifier.verify_attestation_document(&attestation_doc_bytes);
@@ -802,21 +829,6 @@ mod tests {
 		assert!(
 			matches!(result, Err(Error::CodeUntrusted { .. })),
 			"Should reject attestation when no PCR configuration matches, got {result:?}"
-		);
-	}
-
-	/// An empty inner configuration compares nothing, so without a guard it matches every attestation
-	/// and silently turns PCR pinning off.
-	#[test]
-	fn test_empty_pcr_configuration_does_not_match() {
-		let verifier = Verifier::new(vec![vec![]])
-			.with_max_age(TEN_YEARS)
-			.with_skipped_certificate_time_check();
-
-		let result = verifier.verify_attestation_document(&real_attestation_bytes());
-		assert!(
-			matches!(result, Err(Error::CodeUntrusted { .. })),
-			"An empty PCR configuration must not satisfy the policy, got {result:?}"
 		);
 	}
 
@@ -878,5 +890,17 @@ mod tests {
 			verifier.check_attestation_freshness(&far_future),
 			Err(Error::AttestationInvalidTimestamp(_))
 		));
+	}
+
+	/// Supplying no configurations at all is still expressible, and must still fail closed.
+	#[test]
+	fn test_no_pcr_configuration_is_rejected() {
+		let verifier = Verifier::new(vec![], TEN_YEARS).with_skipped_certificate_time_check();
+
+		let result = verifier.verify_attestation_document(&real_attestation_bytes());
+		assert!(
+			matches!(result, Err(Error::CodeUntrusted { .. })),
+			"A verifier with no PCR configuration must reject, got {result:?}"
+		);
 	}
 }
