@@ -1,13 +1,14 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::{Engine, engine::general_purpose::STANDARD};
 use coset::CoseSign1;
-use crypto_box::{PublicKey, aead::OsRng};
 use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use webpki::{EndEntityCert, TrustAnchor};
 use x509_cert::{Certificate, der::Decode};
 
-use crate::nsm::{AttestationDoc, parse_cose_attestation_doc};
+use crate::{
+	nsm::{AttestationDoc, parse_cose_attestation_doc},
+	public_key_commitment,
+};
 
 /// Constants for enclave verification
 pub mod constants;
@@ -20,7 +21,6 @@ mod tests;
 
 pub use types::{
 	EnclaveAttestationError, EnclaveAttestationResult, PcrMeasurement, VerifiedAttestation,
-	VerifiedAttestationWithCiphertext,
 };
 
 use constants::{AWS_NITRO_ROOT_CERT, MAX_ATTESTATION_AGE_MILLISECONDS, get_expected_pcr_length};
@@ -32,7 +32,6 @@ use constants::{AWS_NITRO_ROOT_CERT, MAX_ATTESTATION_AGE_MILLISECONDS, get_expec
 /// - Certificate chain validation against AWS Nitro root certificates
 /// - PCR (Platform Configuration Register) value validation
 /// - Attestation document freshness checks
-/// - Public key extraction
 #[derive(Debug)]
 pub struct EnclaveAttestationVerifier {
 	/// Allowed PCR configs for validation
@@ -85,99 +84,39 @@ impl EnclaveAttestationVerifier {
 		}
 	}
 
-	/// Verifies a base64-encoded attestation document
+	/// Verifies an attestation document and its commitment to the supplied public key.
 	///
-	/// This is a convenience method that handles base64 decoding and then verifies the document
-	///
-	/// # Arguments
-	/// * `attestation_doc_base64` - The base64-encoded attestation document
-	///
-	/// # Returns
-	/// A verified attestation containing the enclave's public key and PCR values
-	///
-	/// # Errors
-	/// Returns an error if the base64 decoding fails or the attestation document verification fails
-	pub fn verify_attestation_document_base64(
-		&self,
-		attestation_doc_base64: &str,
-	) -> EnclaveAttestationResult<VerifiedAttestation> {
-		let attestation_doc_bytes = STANDARD.decode(attestation_doc_base64).map_err(|e| {
-			EnclaveAttestationError::AttestationDocumentParseError(format!(
-				"Failed to decode base64 attestation document: {e}"
-			))
-		})?;
-
-		self.verify_attestation_document(&attestation_doc_bytes)
-	}
-
-	/// Verifies a base64-encoded attestation document and encrypts the given plaintext
-	///
-	/// This is a convenience method that handles base64 decoding, verifying the attestation document,
-	/// and encrypting the given plaintext using the enclave's public key using `crypto_box` sealed box.
-	///
-	/// Learn about seal box [here](https://libsodium.gitbook.io/doc/public-key_cryptography/sealed_boxes)
-	///
-	/// # Arguments
-	/// * `attestation_doc_base64` - The base64-encoded attestation document
-	/// * `plaintext` - The plaintext to encrypt
+	/// Accepts raw COSE Sign1 document bytes and key bytes before transport encoding.
+	/// Checks the certificate chain, signature, PCR values and document age, then requires
+	/// the entire `user_data` field to equal [`public_key_commitment`] of the supplied key.
+	/// The document's `public_key` field is unused. Key encoding and algorithm are not validated.
 	///
 	/// # Returns
-	/// A verified attestation containing the enclave's public key and the encrypted plaintext.
+	/// The authenticated timestamp and module ID.
 	///
 	/// # Errors
-	/// Returns an error if the base64 decoding fails or the attestation document verification fails
-	pub fn verify_attestation_document_and_encrypt(
-		&self,
-		attestation_doc_base64: &str,
-		plaintext: &[u8],
-	) -> EnclaveAttestationResult<VerifiedAttestationWithCiphertext> {
-		let verified_attestation =
-			self.verify_attestation_document_base64(attestation_doc_base64)?;
-
-		let public_key = {
-			let pk_bytes = STANDARD
-				.decode(verified_attestation.enclave_public_key.clone())
-				.map_err(|e| {
-					EnclaveAttestationError::InvalidEnclavePublicKey(format!(
-						"Failed to decode enclave public key: {e}"
-					))
-				})?;
-			PublicKey::from_slice(&pk_bytes).map_err(|e| {
-				EnclaveAttestationError::InvalidEnclavePublicKey(format!(
-					"Failed to parse enclave public key: {e}"
-				))
-			})?
-		};
-
-		let ciphertext = public_key
-			.seal(&mut OsRng, plaintext)
-			.map_err(|_| EnclaveAttestationError::EncryptionError)?;
-
-		Ok(VerifiedAttestationWithCiphertext {
-			verified_attestation,
-			ciphertext,
-		})
-	}
-
-	/// Verifies the attestation document from the enclave.
-	///
-	/// Follows the AWS Nitro Enclave Attestation Document Specification:
-	/// <https://docs.aws.amazon.com/enclaves/latest/user/nitro-enclave-attestation-document.html>
-	///
-	/// # Arguments
-	/// * `attestation_doc_bytes` - The raw (COSE Sign1) attestation document
-	///
-	/// # Returns
-	/// A verified attestation containing the enclave's public key and PCR values
-	///
-	/// # Errors
-	/// Returns an error if any verification step fails
-	pub fn verify_attestation_document(
+	/// Returns an error if document verification fails, or
+	/// [`EnclaveAttestationError::KeyCommitmentMismatch`] if `user_data` is missing or mismatched.
+	pub fn verify_attestation_document_with_key_commitment(
 		&self,
 		attestation_doc_bytes: &[u8],
+		public_key: &[u8],
 	) -> EnclaveAttestationResult<VerifiedAttestation> {
+		let attestation = self.verify_document(attestation_doc_bytes)?;
+		let expected = public_key_commitment(public_key);
+		if attestation.user_data.as_ref().map(|data| data.as_slice()) != Some(expected.as_slice()) {
+			return Err(EnclaveAttestationError::KeyCommitmentMismatch);
+		}
+
+		Ok(VerifiedAttestation::new(
+			attestation.timestamp,
+			attestation.module_id,
+		))
+	}
+
+	fn verify_document(&self, bytes: &[u8]) -> EnclaveAttestationResult<AttestationDoc> {
 		// 1. Syntactical validation
-		let (cose_sign1, attestation) = Self::parse_attestation_doc(attestation_doc_bytes)?;
+		let (cose_sign1, attestation) = Self::parse_attestation_doc(bytes)?;
 
 		// 2. Semantic validation
 		let leaf_cert = self.verify_certificate_chain(&attestation)?;
@@ -186,13 +125,8 @@ impl EnclaveAttestationVerifier {
 		Self::verify_cose_signature(&cose_sign1, &leaf_cert)?;
 		self.validate_pcr_values(&attestation)?;
 		self.check_attestation_freshness(&attestation)?;
-		let public_key = Self::extract_public_key(&attestation)?;
 
-		Ok(VerifiedAttestation::new(
-			STANDARD.encode(public_key),
-			attestation.timestamp,
-			attestation.module_id,
-		))
+		Ok(attestation)
 	}
 
 	fn parse_attestation_doc(
@@ -431,17 +365,6 @@ impl EnclaveAttestationVerifier {
 		}
 
 		Ok(())
-	}
-
-	fn extract_public_key(attestation: &AttestationDoc) -> EnclaveAttestationResult<Vec<u8>> {
-		attestation.public_key.clone().map_or_else(
-			|| {
-				Err(EnclaveAttestationError::InvalidEnclavePublicKey(
-					"No public key in attestation document".to_string(),
-				))
-			},
-			|key| Ok(key.into_vec()),
-		)
 	}
 
 	fn get_pcr_value(

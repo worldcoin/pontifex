@@ -99,6 +99,14 @@ impl ChannelEnclave {
 		self.secret_key.public_key().to_bytes()
 	}
 
+	/// Returns the commitment to this channel's public key.
+	///
+	/// Applies [`crate::public_key_commitment`] to [`Self::public_key`].
+	#[must_use]
+	pub fn public_key_commitment(&self) -> [u8; 32] {
+		crate::public_key_commitment(&self.public_key())
+	}
+
 	/// Opens a sealed request, returning the plaintext and the sealer for its one response.
 	///
 	/// # Errors
@@ -179,10 +187,9 @@ impl std::fmt::Debug for ChannelConsumer {
 }
 
 impl ChannelConsumer {
-	/// Builds a consumer for the public key a verified attestation carried.
+	/// Creates a consumer for an authenticated enclave public key.
 	///
-	/// This does **not** verify that attestation. Verify it first — otherwise the key may be the
-	/// untrusted parent's own, and it will read every request.
+	/// Authenticate the key before calling this method.
 	///
 	/// # Errors
 	///

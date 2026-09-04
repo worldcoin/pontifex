@@ -18,7 +18,7 @@ description = "An abstraction for building and interacting with AWS Nitro enclav
 default=["http"]
 client = ["dep:tokio-vsock", "dep:rmp-serde"]
 server = ["tokio/rt", "dep:tokio-vsock", "dep:rmp-serde"]
-nsm = ["nsm-types", "aws-nitro-enclaves-nsm-api/nix", "tokio/sync"]
+nsm = ["nsm-types", "aws-nitro-enclaves-nsm-api/nix", "tokio/sync", "dep:sha2"]
 nsm-types = [
     "dep:coset",
     "dep:ciborium",
@@ -27,6 +27,7 @@ nsm-types = [
 ]
 http = ["_vsock-https"]
 channel = [
+    "dep:sha2",
     "dep:quantum-box",
     "dep:zeroize",
 ]
@@ -42,8 +43,7 @@ kms = [
 # from Nitro.
 verify = [
     "nsm-types",
-    "dep:base64",
-    "dep:crypto_box",
+    "dep:sha2",
     "dep:p384",
     "dep:webpki",
     "dep:x509-cert",
@@ -101,17 +101,17 @@ rustls = { version = "0.23", optional = true, default-features = false, features
     "std",
     "tls12",
 ] }
-base64 = { version = "0.22", optional = true }
 coset = { version = "0.4", optional = true }
 ciborium = { version = "0.2", optional = true }
 webpki = { version = "0.22", optional = true }
 x509-cert = { version = "0.2", optional = true }
-crypto_box = { version = "0.9", features = ["seal"], optional = true }
+sha2 = { version = "0.10", optional = true }
 p384 = { version = "0.13", default-features = false, features = ["ecdsa", "sha384"], optional = true }
 quantum-box = { version = "0.1", optional = true }
 zeroize = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
+base64 = "0.22"
 tokio-test = "0.4"
 tokio = { version = "1", features = ["macros", "rt", "test-util", "time"] }
 aws-smithy-runtime-api = { version = "1.9", features = ["client", "http-1x", "test-util"] }

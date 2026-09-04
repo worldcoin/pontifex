@@ -42,54 +42,32 @@ pub enum EnclaveAttestationError {
 	#[error("Invalid timestamp: {0}")]
 	AttestationInvalidTimestamp(String),
 
-	/// Invalid enclave public key
-	#[error("Invalid enclave public key: {0}")]
-	InvalidEnclavePublicKey(String),
-
-	/// Failed to encrypt data
-	#[error("Failed to encrypt data")]
-	EncryptionError,
+	/// The authenticated `user_data` is missing or does not commit to the supplied key.
+	#[error("Attestation user_data does not match the public key commitment")]
+	KeyCommitmentMismatch,
 }
 
 /// Result type for enclave attestation operations
 pub type EnclaveAttestationResult<T, E = EnclaveAttestationError> = Result<T, E>;
 
-/// Verified attestation data from the enclave.
+/// Metadata from a verified attestation document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifiedAttestation {
-	/// The base64 encoded public key of the enclave
-	pub enclave_public_key: String,
-
-	/// The timestamp of the attestation
+	/// Document creation time in milliseconds since the Unix epoch.
 	pub timestamp: u64,
-	/// The module ID of the enclave
+	/// Identifier of the Nitro module that issued the attestation.
 	pub module_id: String,
 }
 
 impl VerifiedAttestation {
-	/// Creates a new `VerifiedAttestation`
-	///
-	/// # Arguments
-	/// * `enclave_public_key` - The base64 encoded public key of the enclave
-	/// * `timestamp` - The timestamp of the attestation
-	/// * `module_id` - The module ID of the enclave
+	/// Creates a new `VerifiedAttestation`.
 	#[must_use]
-	pub const fn new(enclave_public_key: String, timestamp: u64, module_id: String) -> Self {
+	pub const fn new(timestamp: u64, module_id: String) -> Self {
 		Self {
-			enclave_public_key,
 			timestamp,
 			module_id,
 		}
 	}
-}
-
-/// Verified attestation with ciphertext
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerifiedAttestationWithCiphertext {
-	/// The verified attestation
-	pub verified_attestation: VerifiedAttestation,
-	/// The ciphertext bytes
-	pub ciphertext: Vec<u8>,
 }
 
 /// Represents a PCR measurement with its index and value

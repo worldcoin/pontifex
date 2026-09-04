@@ -72,43 +72,56 @@ let response: HealthStatus = send(connection, &HealthCheck).await?;
 
 ### Attestation Verification
 
-Outside the enclave, the `verify` feature checks an attestation document produced by the NSM:
-COSE Sign1 signature, certificate chain up to the AWS Nitro root, PCR values, and freshness.
+The `verify` feature checks an attestation document's COSE signature, certificate chain,
+PCR values and age, then verifies its `user_data` commitment to the supplied public key.
 
 ```rust,ignore
-use pontifex::verify::{EnclaveAttestationVerifier, PcrMeasurement};
+use pontifex::{EnclaveAttestationVerifier, PcrMeasurement};
 
-// Verification succeeds if *any* of the allowed configurations matches,
-// which allows supporting multiple enclave software versions at once.
+// Any matching PCR configuration is accepted.
 let verifier = EnclaveAttestationVerifier::new(vec![vec![
     PcrMeasurement::new(0, pcr0),
     PcrMeasurement::new(1, pcr1),
     PcrMeasurement::new(2, pcr2),
 ]]);
 
-let attestation = verifier.verify_attestation_document_base64(&attestation_doc_base64)?;
-println!("enclave public key: {}", attestation.enclave_public_key);
+let attestation = verifier.verify_attestation_document_with_key_commitment(
+    &document,
+    &public_key,
+)?;
 ```
+
+Use `pontifex::public_key_commitment(&public_key)` to compute a commitment for any key.
+It takes raw key bytes before transport encoding. The verifier rejects missing or
+mismatched commitments with `KeyCommitmentMismatch`.
 
 ### Sealed Channel
 
 The `channel` feature allows establishing an end-to-end encrypted channel, so a client can send data directly to the enclave without anyone else (chiefly the untrusted parent host) being able to read it. Every message is a [`quantum-box`](https://docs.rs/quantum-box) sealed box over X-Wing, a hybrid post-quantum KEM.
 
-The enclave usually generates a keypair per boot and attests its public key. The client then verifies the attestation and seals to the key it carried. Each request mints its own response key to receive an encrypted response.
+The channel's X-Wing public key exceeds [NSM's public-key field limit](https://github.com/aws/aws-nitro-enclaves-nsm-api/blob/main/docs/attestation_process.md#22-attestation-document-specification). Include its commitment in `user_data` and return the public key alongside the attestation document.
 
 The default flow looks as follows:
 
 ```rust,ignore
-use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
+use pontifex::{ChannelConsumer, ChannelDomain, ChannelEnclave, SecureModule};
 
-// The name is the only lever for a breaking wire change, so carry a version in it.
+// Use the same protocol name and version on both sides.
 const DOMAIN: ChannelDomain = ChannelDomain::new("my-protocol/match_v1");
 
-// Enclave (usually once per boot): Attest `enclave.public_key()`, then hand those bytes out.
+// Enclave: generate the keypair and attest its commitment.
 let enclave = ChannelEnclave::generate(DOMAIN)?;
+let public_key = enclave.public_key();
+let document = SecureModule::connect()?.raw_attest(
+    Some(enclave.public_key_commitment()),
+    None::<Vec<u8>>,
+    None::<Vec<u8>>,
+)?;
+// Return `document` and `public_key` to the consumer.
 
-// End consumer: uses an *attested* public key. NOTE: attestation is currently not verified here.
-let consumer = ChannelConsumer::new(DOMAIN, &attested_public_key)?;
+// Consumer: use the verifier configured above to authenticate the key.
+verifier.verify_attestation_document_with_key_commitment(&document, &public_key)?;
+let consumer = ChannelConsumer::new(DOMAIN, &public_key)?;
 let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;
 
 // Enclave: open the request, seal the one reply it belongs to.
