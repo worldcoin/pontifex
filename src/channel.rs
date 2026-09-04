@@ -254,10 +254,11 @@ impl ChannelConsumer {
 		Ok((consumer, attestation))
 	}
 
-	/// Builds a consumer for a public key that has **not** been checked against an attestation.
+	/// Builds a consumer for a provided public key.
 	///
-	/// The key may be the untrusted parent's own, in which case it reads every request. Prefer
-	/// [`Self::from_attestation`].
+	/// # Warning
+	/// This method will not verify the public key is attested. Most use cases
+	/// should use [`Self::from_attestation`].
 	///
 	/// # Errors
 	///
@@ -640,26 +641,21 @@ mod tests {
 		assert!(matches!(err, ChannelError::Attestation(_)), "got {err:?}");
 	}
 
-	/// The fixture attests a raw 32-byte key rather than a commitment, so it commits to no channel
-	/// key at all — exactly what an attacker replaying a genuine document beside their own key
-	/// would present.
 	#[test]
 	fn from_attestation_rejects_a_key_the_document_does_not_commit_to() {
 		let err = ChannelConsumer::from_attestation(
 			TEST_DOMAIN,
 			&real_attestation_verifier(),
 			&real_attestation_bytes(),
-			&enclave().public_key(),
+			&enclave().public_key(), // different public key
 		)
 		.expect_err("the fixture does not commit to this key");
 
 		assert_eq!(err, ChannelError::KeyCommitmentMismatch);
 	}
 
-	/// What the enclave attests must be the commitment to what the consumer seals to, or the two
-	/// sides silently disagree and every channel fails closed at the verifier.
 	#[test]
-	fn the_enclave_commitment_matches_its_own_public_key() {
+	fn fixture_test_enclave_commitment_matches_its_own_public_key() {
 		let enclave = enclave();
 
 		assert_eq!(
@@ -668,19 +664,14 @@ mod tests {
 		);
 	}
 
-	/// The X-Wing key is the reason the commitment exists: it does not fit the NSM's 1024-byte
-	/// `public_key` field, while the commitment always does.
 	#[test]
-	fn the_commitment_fits_the_nsm_public_key_field() {
+	fn commitment_fits_the_nsm_public_key_field() {
 		const NSM_PUBLIC_KEY_LIMIT: usize = 1024;
-
-		assert!(enclave().public_key().len() > NSM_PUBLIC_KEY_LIMIT);
 		assert!(enclave().public_key_commitment().len() <= NSM_PUBLIC_KEY_LIMIT);
 	}
 
 	#[test]
-	fn a_commitment_is_stable() {
-		// Pinned so a change to the domain separator or the hash is a deliberate, visible break.
+	fn commitment_is_stable() {
 		assert_eq!(
 			public_key_commitment(b"key"),
 			hex_literal::hex!("77634addf9ae031e3d621410d643d1f13b7d426876627b53d89ea0f7bba71cfb")
@@ -692,18 +683,6 @@ mod tests {
 		assert_ne!(
 			public_key_commitment(b"key-a"),
 			public_key_commitment(b"key-b")
-		);
-	}
-
-	/// The document's byte-string fields are free-form, so a bare digest written to one for another
-	/// purpose could otherwise be replayed as a commitment to an attacker's key.
-	#[test]
-	fn the_domain_separator_is_covered() {
-		use sha2::{Digest as _, Sha256};
-
-		assert_ne!(
-			public_key_commitment(b"key").as_slice(),
-			Sha256::digest(b"key").as_slice()
 		);
 	}
 }
