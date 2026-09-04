@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/worldcoin/pontifex/compare/1.2.0...2.0.0) - 2026-09-04
+
+### Added
+
+- [**breaking**] attestation verification & attested channel ([#44](https://github.com/worldcoin/pontifex/pull/44))
+
 ## [1.2.0](https://github.com/worldcoin/pontifex/compare/1.1.2...1.2.0) - 2026-09-03
 
 ### Added
