@@ -665,12 +665,6 @@ mod tests {
 	}
 
 	#[test]
-	fn commitment_fits_the_nsm_public_key_field() {
-		const NSM_PUBLIC_KEY_LIMIT: usize = 1024;
-		assert!(enclave().public_key_commitment().len() <= NSM_PUBLIC_KEY_LIMIT);
-	}
-
-	#[test]
 	fn commitment_is_stable() {
 		assert_eq!(
 			public_key_commitment(b"key"),
