@@ -65,6 +65,17 @@ jobs:
               run: |
                   cargo test --all-features
 
+            - name: Test browser attestation and channels
+              env:
+                  CC_wasm32_unknown_unknown: clang
+                  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+              run: |
+                  rustup target add wasm32-unknown-unknown
+                  cargo install wasm-bindgen-cli --version 0.2.126 --locked
+                  CHROMEDRIVER="$CHROMEWEBDRIVER/chromedriver" cargo test \
+                    --no-default-features --features channel,attestation \
+                    --target wasm32-unknown-unknown --lib
+
     deny:
         name: Cargo deny
         runs-on: ubuntu-latest
