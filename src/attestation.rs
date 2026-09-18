@@ -1,6 +1,10 @@
 //! Verification of AWS Nitro Enclave attestation documents.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(target_arch = "wasm32")]
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use coset::{Algorithm, CoseSign1, iana};
 use p384::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
@@ -449,7 +453,7 @@ impl Verifier {
 	}
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
 	use std::{
 		collections::HashMap,
@@ -828,5 +832,67 @@ mod tests {
 			matches!(result, Err(Error::ParseError(ref m)) if m.contains("maximum")),
 			"got {result:?}"
 		);
+	}
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod browser_tests {
+	use super::*;
+	use crate::test_fixtures::{
+		TEN_YEARS, pcr0_only, real_attestation_bytes, real_attestation_verifier,
+	};
+	use wasm_bindgen_test::wasm_bindgen_test;
+
+	wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
+
+	#[wasm_bindgen_test]
+	fn expired_certificate_is_rejected_using_the_browser_clock() {
+		let verifier = Verifier::new(vec![pcr0_only()], TEN_YEARS);
+		assert!(matches!(
+			verifier.verify_attestation_document(&real_attestation_bytes()),
+			Err(Error::ChainInvalid(_))
+		));
+	}
+
+	#[wasm_bindgen_test]
+	fn real_signature_measurements_and_freshness_are_checked_in_a_worker() {
+		// Only the expired fixture's certificate time is skipped, using an existing cfg(test)
+		// hook. Production verification always checks certificate time and document freshness.
+		let bytes = real_attestation_bytes();
+		let verifier = real_attestation_verifier();
+		let verified = verifier
+			.verify_attestation_document(&bytes)
+			.expect("valid signed fixture");
+		assert_eq!(
+			verified.document().public_key.as_ref().unwrap().as_slice(),
+			crate::test_fixtures::ATTESTED_PUBLIC_KEY.as_slice()
+		);
+
+		let mut tampered = bytes.clone();
+		*tampered.last_mut().unwrap() ^= 1;
+		assert!(matches!(
+			verifier.verify_attestation_document(&tampered),
+			Err(Error::SignatureInvalid(_))
+		));
+
+		let wrong_pcr = Verifier::new(vec![PcrConfig::new([1; 48])], TEN_YEARS)
+			.with_skipped_certificate_time_check();
+		assert!(matches!(
+			wrong_pcr.verify_attestation_document(&bytes),
+			Err(Error::CodeUntrusted { .. })
+		));
+
+		let stale =
+			Verifier::new(vec![pcr0_only()], Duration::ZERO).with_skipped_certificate_time_check();
+		assert!(matches!(
+			stale.verify_attestation_document(&bytes),
+			Err(Error::Stale { .. })
+		));
+
+		let wrong_root = verifier.with_root_certificate(vec![0; 32]);
+		assert!(matches!(
+			wrong_root.verify_attestation_document(&bytes),
+			Err(Error::ChainInvalid(_))
+		));
 	}
 }

@@ -48,6 +48,8 @@ attestation = [
     "dep:p384",
     "dep:webpki",
     "dep:x509-cert",
+    "dep:web-time",
+    "dep:getrandom",
 ]
 
 # Internal: The HTTPS-over-vsock transport, shared by `http` and `kms`.
@@ -114,7 +116,17 @@ p384 = { version = "0.13", default-features = false, features = ["ecdsa", "sha38
 [dev-dependencies]
 aws-nitro-enclaves-nsm-api = { version = "0.5", default-features = false }
 base64 = "0.22"
+hex-literal = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio-test = "0.4"
 tokio = { version = "1", features = ["macros", "rt", "test-util", "time"] }
 aws-smithy-runtime-api = { version = "1.9", features = ["client", "http-1x", "test-util"] }
-hex-literal = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.76"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"], optional = true }
+quantum-box = { version = "0.1", features = ["wasm_js"], optional = true }
+web-time = { version = "1", optional = true }
