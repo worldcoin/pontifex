@@ -89,10 +89,18 @@ let attestation = verifier.verify_attestation_document(&attestation_doc)?;
 println!("enclave module: {}", attestation.document().module_id);
 ```
 
-For development with Nitro `--debug-mode`, explicitly pin the zero measurements and
-call `Verifier::new(...).with_debug_measurements()`. Zero PCR0 is rejected by default.
-The opt-in retains exact PCR matching, signature, certificate, and freshness checks,
-but zero measurements cannot identify the enclave code. Do not enable it in production.
+For development only, `dangerously_skip_measurements()` disables all PCR checks,
+including rejection of Nitro debug measurements. No PCR configuration is required;
+any supplied pins are ignored:
+
+```rust,ignore
+let verifier = Verifier::new(vec![], max_age).dangerously_skip_measurements();
+```
+
+This accepts any enclave code with otherwise valid attestation. Certificate chain,
+signature, and freshness checks remain enabled, and `ChannelConsumer::from_attestation`
+still verifies the public-key commitment. Never enable this in production. Without
+this explicit opt-in, measurement checks remain mandatory and zero PCR0 is rejected.
 
 ### Sealed Channel
 
