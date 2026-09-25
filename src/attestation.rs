@@ -116,6 +116,7 @@ pub struct Verifier {
 	allowed_pcr_configs: Vec<PcrConfig>,
 	root_certificate: Vec<u8>,
 	max_age: Duration,
+	allow_debug_measurements: bool,
 	#[cfg(test)]
 	skip_certificate_time_check: bool,
 }
@@ -133,9 +134,20 @@ impl Verifier {
 			allowed_pcr_configs,
 			root_certificate: AWS_NITRO_ROOT_CERT.to_vec(),
 			max_age,
+			allow_debug_measurements: false,
 			#[cfg(test)]
 			skip_certificate_time_check: false,
 		}
+	}
+
+	/// Allows explicitly configured all-zero PCR0 measurements for development enclaves.
+	///
+	/// Debug measurements do not identify the enclave's code. Certificate, signature,
+	/// freshness and exact PCR matching checks still apply. Do not use in production.
+	#[must_use]
+	pub const fn with_debug_measurements(mut self) -> Self {
+		self.allow_debug_measurements = true;
+		self
 	}
 
 	/// Sets the DER-encoded root certificate the attestation chain must chain up to.
@@ -281,10 +293,11 @@ impl Verifier {
 
 		let expected_length = get_expected_pcr_length(attestation.digest);
 
-		if self
-			.allowed_pcr_configs
-			.iter()
-			.any(|config| config.enclave_image == [0; PCR_LENGTH])
+		if !self.allow_debug_measurements
+			&& self
+				.allowed_pcr_configs
+				.iter()
+				.any(|config| config.enclave_image == [0; PCR_LENGTH])
 		{
 			return Err(Error::CodeUntrusted {
 				pcr_index: PCR_ENCLAVE_IMAGE,
@@ -694,6 +707,85 @@ mod tests {
 			matches!(result, Err(Error::CodeUntrusted { .. })),
 			"Should reject mismatched PCR values, got {result:?}"
 		);
+	}
+
+	#[test]
+	fn debug_pcr_matching_requires_opt_in_and_still_checks_every_pin() {
+		let (mut doc, _) = AttestationDoc::from_bytes(&real_attestation_bytes()).unwrap();
+		doc.pcrs = (0..=2)
+			.map(|index| (index, ByteBuf::from(vec![0; 48])))
+			.collect();
+		doc.pcrs.insert(8, ByteBuf::from(vec![4; 48]));
+		let pins = PcrConfig::new([0; 48])
+			.with_pcr(1, [0; 48])
+			.with_pcr(2, [0; 48])
+			.with_pcr(8, [4; 48]);
+		let verifier = Verifier::new(vec![pins], TEN_YEARS);
+		assert!(matches!(
+			verifier.validate_pcr_values(&doc),
+			Err(Error::CodeUntrusted { .. })
+		));
+
+		let verifier = verifier.with_debug_measurements();
+		assert!(verifier.validate_pcr_values(&doc).is_ok());
+		for index in [0, 1, 2, 8] {
+			for value in [Some(vec![1; 48]), Some(vec![0; 47]), None] {
+				let mut invalid = doc.clone();
+				if let Some(value) = value {
+					invalid.pcrs.insert(index, ByteBuf::from(value));
+				} else {
+					invalid.pcrs.remove(&index);
+				}
+				assert!(matches!(
+					verifier.validate_pcr_values(&invalid),
+					Err(Error::CodeUntrusted { .. })
+				));
+			}
+		}
+		assert!(matches!(
+			Verifier::new(vec![], TEN_YEARS)
+				.with_debug_measurements()
+				.validate_pcr_values(&doc),
+			Err(Error::CodeUntrusted { .. })
+		));
+		assert!(matches!(
+			real_attestation_verifier()
+				.with_debug_measurements()
+				.validate_pcr_values(&doc),
+			Err(Error::CodeUntrusted { .. })
+		));
+	}
+
+	#[test]
+	fn debug_opt_in_preserves_signature_chain_and_freshness_verification() {
+		let verifier = real_attestation_verifier().with_debug_measurements();
+		assert!(
+			verifier
+				.verify_attestation_document(&real_attestation_bytes())
+				.is_ok()
+		);
+		assert!(matches!(
+			verifier.verify_attestation_document(&real_attestation_with_tampered_signature()),
+			Err(Error::SignatureInvalid(_))
+		));
+		assert!(matches!(
+			verifier
+				.with_root_certificate(untrusted_root_certificate())
+				.verify_attestation_document(&real_attestation_bytes()),
+			Err(Error::ChainInvalid(_))
+		));
+		assert!(matches!(
+			real_attestation_verifier_with_max_age(Duration::from_mins(1))
+				.with_debug_measurements()
+				.verify_attestation_document(&real_attestation_bytes()),
+			Err(Error::Stale { .. })
+		));
+		let mut verifier = real_attestation_verifier().with_debug_measurements();
+		verifier.skip_certificate_time_check = false;
+		assert!(matches!(
+			verifier.verify_attestation_document(&real_attestation_bytes()),
+			Err(Error::ChainInvalid(_))
+		));
 	}
 
 	#[test]

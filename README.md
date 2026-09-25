@@ -89,6 +89,11 @@ let attestation = verifier.verify_attestation_document(&attestation_doc)?;
 println!("enclave module: {}", attestation.document().module_id);
 ```
 
+For development with Nitro `--debug-mode`, explicitly pin the zero measurements and
+call `Verifier::new(...).with_debug_measurements()`. Zero PCR0 is rejected by default.
+The opt-in retains exact PCR matching, signature, certificate, and freshness checks,
+but zero measurements cannot identify the enclave code. Do not enable it in production.
+
 ### Sealed Channel
 
 The `channel` feature allows establishing an end-to-end encrypted channel, so a client can send data directly to the enclave without anyone else (chiefly the untrusted parent host) being able to read it. Every message is a [`quantum-box`](https://docs.rs/quantum-box) sealed box over X-Wing, a hybrid post-quantum KEM.
