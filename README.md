@@ -89,6 +89,19 @@ let attestation = verifier.verify_attestation_document(&attestation_doc)?;
 println!("enclave module: {}", attestation.document().module_id);
 ```
 
+For development only, `dangerously_skip_measurements()` disables all PCR checks,
+including rejection of Nitro debug measurements. No PCR configuration is required;
+any supplied pins are ignored:
+
+```rust,ignore
+let verifier = Verifier::new(vec![], max_age).dangerously_skip_measurements();
+```
+
+This accepts any enclave code with otherwise valid attestation. Certificate chain,
+signature, and freshness checks remain enabled, and `ChannelConsumer::from_attestation`
+still verifies the public-key commitment. Never enable this in production. Without
+this explicit opt-in, measurement checks remain mandatory and zero PCR0 is rejected.
+
 ### Sealed Channel
 
 The `channel` feature allows establishing an end-to-end encrypted channel, so a client can send data directly to the enclave without anyone else (chiefly the untrusted parent host) being able to read it. Every message is a [`quantum-box`](https://docs.rs/quantum-box) sealed box over X-Wing, a hybrid post-quantum KEM.
