@@ -116,6 +116,7 @@ pub struct Verifier {
 	allowed_pcr_configs: Vec<PcrConfig>,
 	root_certificate: Vec<u8>,
 	max_age: Duration,
+	dangerously_skip_measurements: bool,
 	#[cfg(test)]
 	skip_certificate_time_check: bool,
 }
@@ -133,9 +134,25 @@ impl Verifier {
 			allowed_pcr_configs,
 			root_certificate: AWS_NITRO_ROOT_CERT.to_vec(),
 			max_age,
+			dangerously_skip_measurements: false,
 			#[cfg(test)]
 			skip_certificate_time_check: false,
 		}
+	}
+
+	/// Disables all PCR measurement checks, including rejection of debug measurements.
+	///
+	/// No PCR configuration is required, and any supplied PCR configurations are ignored.
+	/// Certificate chain, signature, and freshness checks remain enabled. Consumers using
+	/// `ChannelConsumer::from_attestation` still verify the public-key commitment.
+	///
+	/// # Warning
+	/// This accepts any enclave code with otherwise valid attestation, including Nitro
+	/// debug-mode enclaves. Use only for development; never enable it in production.
+	#[must_use]
+	pub const fn dangerously_skip_measurements(mut self) -> Self {
+		self.dangerously_skip_measurements = true;
+		self
 	}
 
 	/// Sets the DER-encoded root certificate the attestation chain must chain up to.
@@ -272,6 +289,10 @@ impl Verifier {
 	}
 
 	fn validate_pcr_values(&self, attestation: &AttestationDoc) -> Result<(), Error> {
+		if self.dangerously_skip_measurements {
+			return Ok(());
+		}
+
 		if attestation.pcrs.is_empty() {
 			return Err(Error::CodeUntrusted {
 				pcr_index: 0,
@@ -456,7 +477,7 @@ impl Verifier {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
 	use std::{
-		collections::HashMap,
+		collections::{BTreeMap, HashMap},
 		time::{Duration, SystemTime, UNIX_EPOCH},
 	};
 
@@ -694,6 +715,105 @@ mod tests {
 			matches!(result, Err(Error::CodeUntrusted { .. })),
 			"Should reject mismatched PCR values, got {result:?}"
 		);
+	}
+
+	#[test]
+	fn measurement_skip_accepts_signed_attestations_without_matching_pins() {
+		let bytes = real_attestation_bytes();
+		for pins in [
+			vec![],
+			vec![PcrConfig::new([0; 48])],
+			vec![PcrConfig::new([0xff; 48])],
+			vec![pcr0_only().with_pcr(1, [0xff; 48])],
+			vec![pcr0_only().with_pcr(1, [0; 47])],
+		] {
+			// Only the expired fixture's certificate time is skipped for this test.
+			let verifier = Verifier::new(pins, TEN_YEARS).with_skipped_certificate_time_check();
+			assert!(matches!(
+				verifier.verify_attestation_document(&bytes),
+				Err(Error::CodeUntrusted { .. })
+			));
+			assert!(
+				verifier
+					.dangerously_skip_measurements()
+					.verify_attestation_document(&bytes)
+					.is_ok()
+			);
+		}
+	}
+
+	#[test]
+	fn measurement_skip_bypasses_all_pcr_validation() {
+		let strict = real_attestation_verifier();
+		let skip = real_attestation_verifier().dangerously_skip_measurements();
+		let (mut doc, _) = AttestationDoc::from_bytes(&real_attestation_bytes()).unwrap();
+		// These mutations exercise only PCR validation, not the signed document verifier.
+		for pcrs in [
+			(0..=2)
+				.map(|index| (index, ByteBuf::from(vec![0; 48])))
+				.collect(),
+			BTreeMap::new(),
+			BTreeMap::from([(0, ByteBuf::from(vec![0xff; 48]))]),
+			BTreeMap::from([(0, ByteBuf::from(vec![0; 47]))]),
+		] {
+			doc.pcrs = pcrs;
+			assert!(matches!(
+				strict.validate_pcr_values(&doc),
+				Err(Error::CodeUntrusted { .. })
+			));
+			assert!(skip.validate_pcr_values(&doc).is_ok());
+		}
+	}
+
+	#[cfg(feature = "channel")]
+	#[test]
+	fn measurement_skip_preserves_channel_key_commitment_verification() {
+		use crate::channel::{ChannelConsumer, ChannelDomain, ChannelError};
+
+		let verifier = Verifier::new(vec![], TEN_YEARS)
+			.with_skipped_certificate_time_check()
+			.dangerously_skip_measurements();
+		assert!(matches!(
+			ChannelConsumer::from_attestation(
+				ChannelDomain::new("test/measurement-skip"),
+				&verifier,
+				&real_attestation_bytes(),
+				b"unattested-public-key",
+			),
+			Err(ChannelError::KeyCommitmentMismatch)
+		));
+	}
+
+	#[test]
+	fn measurement_skip_preserves_signature_chain_and_freshness_verification() {
+		let verifier = real_attestation_verifier().dangerously_skip_measurements();
+		assert!(
+			verifier
+				.verify_attestation_document(&real_attestation_bytes())
+				.is_ok()
+		);
+		assert!(matches!(
+			verifier.verify_attestation_document(&real_attestation_with_tampered_signature()),
+			Err(Error::SignatureInvalid(_))
+		));
+		assert!(matches!(
+			verifier
+				.with_root_certificate(untrusted_root_certificate())
+				.verify_attestation_document(&real_attestation_bytes()),
+			Err(Error::ChainInvalid(_))
+		));
+		assert!(matches!(
+			real_attestation_verifier_with_max_age(Duration::from_mins(1))
+				.dangerously_skip_measurements()
+				.verify_attestation_document(&real_attestation_bytes()),
+			Err(Error::Stale { .. })
+		));
+		let mut verifier = real_attestation_verifier().dangerously_skip_measurements();
+		verifier.skip_certificate_time_check = false;
+		assert!(matches!(
+			verifier.verify_attestation_document(&real_attestation_bytes()),
+			Err(Error::ChainInvalid(_))
+		));
 	}
 
 	#[test]
