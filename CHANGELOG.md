@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0](https://github.com/worldcoin/pontifex/compare/2.0.1...2.1.0) - 2026-09-28
+
+### Added
+
+- *(attestation)* add dangerous measurement bypass ([#50](https://github.com/worldcoin/pontifex/pull/50))
+
 ## [2.0.1](https://github.com/worldcoin/pontifex/compare/2.0.0...2.0.1) - 2026-09-18
 
 ### Fixed
