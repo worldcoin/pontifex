@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/worldcoin/pontifex/compare/2.1.0...3.0.0) - 2026-09-30
+
+### Added
+
+- *(channel)* [**breaking**] release Pontifex 3.0.0 with quantum-box 0.2 ([#51](https://github.com/worldcoin/pontifex/pull/51))
+
 ## [2.1.0](https://github.com/worldcoin/pontifex/compare/2.0.1...2.1.0) - 2026-09-28
 
 ### Added
