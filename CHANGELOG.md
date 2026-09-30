@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1](https://github.com/worldcoin/pontifex/compare/3.0.0...3.0.1) - 2026-09-30
+
+### Other
+
+- release v3.0.0 ([#52](https://github.com/worldcoin/pontifex/pull/52))
+
 ## [3.0.0](https://github.com/worldcoin/pontifex/compare/2.1.0...3.0.0) - 2026-09-30
 
 ### Added
