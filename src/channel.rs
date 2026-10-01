@@ -311,7 +311,6 @@ impl ChannelConsumer {
 			ResponseOpener {
 				domain: self.domain,
 				seed,
-				response_sk,
 			},
 		))
 	}
@@ -319,8 +318,8 @@ impl ChannelConsumer {
 
 /// Draws a response key seed from the operating system CSPRNG.
 ///
-/// `quantum_box::SecretKey` cannot export its seed, so the channel keeps its own copy to let a
-/// [`ResponseOpener`] be persisted.
+/// `quantum_box::SecretKey` cannot export its seed, so the channel draws and keeps the seed itself
+/// to let a [`ResponseOpener`] be persisted.
 fn generate_seed() -> Result<Zeroizing<[u8; SEED_LEN]>, ChannelError> {
 	let mut seed = Zeroizing::new([0u8; SEED_LEN]);
 	getrandom_04::fill(seed.as_mut()).map_err(|_| SealedBoxError::Rng)?;
@@ -347,8 +346,8 @@ fn generate_seed() -> Result<Zeroizing<[u8; SEED_LEN]>, ChannelError> {
 /// ```
 pub struct ResponseOpener {
 	domain: ChannelDomain,
+	/// Seed of the response key, which is derived from it only when the response is opened.
 	seed: Zeroizing<[u8; SEED_LEN]>,
-	response_sk: SecretKey,
 }
 
 impl std::fmt::Debug for ResponseOpener {
@@ -392,7 +391,6 @@ impl ResponseOpener {
 		Ok(Self {
 			domain,
 			seed: Zeroizing::new(*seed),
-			response_sk: SecretKey::from_seed(seed),
 		})
 	}
 
@@ -404,7 +402,7 @@ impl ResponseOpener {
 	/// a fresh request; the key for these bytes is gone.
 	pub fn open_from_enclave(self, response: &[u8]) -> Result<Zeroizing<Vec<u8>>, ChannelError> {
 		Ok(Zeroizing::new(SecretKey::unseal(
-			&self.response_sk,
+			&SecretKey::from_seed(&self.seed),
 			response,
 			Some(&self.domain.info(RESPONSE)),
 		)?))
@@ -642,7 +640,7 @@ mod tests {
 		let (_, opener) = seal(&consumer_for(&enclave, TEST_DOMAIN), b"inputs");
 
 		let response = PublicKey::seal(
-			&opener.response_sk.public_key(),
+			&SecretKey::from_seed(&opener.seed).public_key(),
 			b"result",
 			Some(&TEST_DOMAIN.info(REQUEST)),
 		)
@@ -660,7 +658,7 @@ mod tests {
 		let (_, opener) = seal(&consumer_for(&enclave, TEST_DOMAIN), b"inputs");
 
 		let response = PublicKey::seal(
-			&opener.response_sk.public_key(),
+			&SecretKey::from_seed(&opener.seed).public_key(),
 			b"result",
 			Some(&ChannelDomain::new("pontifex/other").info(RESPONSE)),
 		)
