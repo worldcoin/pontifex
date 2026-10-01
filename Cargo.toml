@@ -32,6 +32,7 @@ channel = [
     "dep:sha2",
     "dep:quantum-box",
     "dep:zeroize",
+    "dep:getrandom_04",
 ]
 
 kms = [
@@ -105,6 +106,8 @@ rustls = { version = "0.23", optional = true, default-features = false, features
     "tls12",
 ] }
 quantum-box = { version = "0.2", optional = true }
+# Draws response key seeds so a `ResponseOpener` can be persisted; on wasm, quantum-box's `wasm_js` selects the backend.
+getrandom_04 = { package = "getrandom", version = "0.4", optional = true }
 zeroize = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 sha2 = { version = "0.10", optional = true }
 coset = { version = "0.4", optional = true }
