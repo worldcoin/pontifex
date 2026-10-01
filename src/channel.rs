@@ -32,6 +32,12 @@ pub use zeroize::Zeroizing;
 /// Length of an X-Wing encapsulation key: ML-KEM-768 (1184) plus X25519 (32).
 const RESPONSE_KEY_LEN: usize = 1216;
 
+/// Length of the X-Wing seed a response key is derived from.
+const SEED_LEN: usize = 32;
+
+/// Format version prefixed to [`ResponseOpener::to_secret_bytes`].
+const OPENER_VERSION: u8 = 1;
+
 /// Domain separator for [`public_key_commitment`].
 const COMMITMENT_DOMAIN: &[u8] = b"pontifex/public-key-commitment/v1\0";
 
@@ -48,6 +54,9 @@ pub enum ChannelError {
 	/// The request carried a response key that is not a valid X-Wing encapsulation key.
 	#[error("ChannelError::MalformedResponseKey")]
 	MalformedResponseKey,
+	/// Bytes passed to [`ResponseOpener::from_secret_bytes`] are not a persisted opener.
+	#[error("ChannelError::MalformedOpener")]
+	MalformedOpener,
 	/// A key, a seal, or an unseal failed.
 	#[error("ChannelError::SealedBox: {0}")]
 	SealedBox(#[from] SealedBoxError),
@@ -88,12 +97,13 @@ impl ChannelDomain {
 }
 
 impl ZeroizeOnDrop for ChannelEnclave {}
-impl ZeroizeOnDrop for ResponseOpener {} // remember to update if adding more secret info which is not a `SecretKey`
+impl ZeroizeOnDrop for ResponseOpener {} // remember to update if adding more secret info which is not a `SecretKey` or seed
 
 const _: () = {
-	// Ensures ZeroizeOnDrop is present for `SecretKey`
+	// Ensures ZeroizeOnDrop is present for `SecretKey` and the persisted seed
 	const fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
 	assert_zeroize_on_drop::<SecretKey>();
+	assert_zeroize_on_drop::<Zeroizing<[u8; SEED_LEN]>>();
 };
 
 /// The enclave side of a channel. Opens sealed requests and seals the matching responses.
@@ -283,7 +293,8 @@ impl ChannelConsumer {
 		&self,
 		plaintext: &[u8],
 	) -> Result<(Vec<u8>, ResponseOpener), ChannelError> {
-		let response_sk = SecretKey::generate()?;
+		let seed = generate_seed()?;
+		let response_sk = SecretKey::from_seed(&seed);
 
 		let mut body = Zeroizing::new(Vec::with_capacity(RESPONSE_KEY_LEN + plaintext.len()));
 		body.extend_from_slice(&response_sk.public_key().to_bytes());
@@ -299,13 +310,28 @@ impl ChannelConsumer {
 			request,
 			ResponseOpener {
 				domain: self.domain,
+				seed,
 				response_sk,
 			},
 		))
 	}
 }
 
+/// Draws a response key seed from the operating system CSPRNG.
+///
+/// `quantum_box::SecretKey` cannot export its seed, so the channel keeps its own copy to let a
+/// [`ResponseOpener`] be persisted.
+fn generate_seed() -> Result<Zeroizing<[u8; SEED_LEN]>, ChannelError> {
+	let mut seed = Zeroizing::new([0u8; SEED_LEN]);
+	getrandom_04::fill(seed.as_mut()).map_err(|_| SealedBoxError::Rng)?;
+	Ok(seed)
+}
+
 /// Opens the response from the enclave after a [`ChannelConsumer::seal_to_enclave`] call. One-time use.
+///
+/// A consumer that may not stay alive until the response arrives (e.g. a mobile app that can be
+/// killed) can persist it with [`Self::to_secret_bytes`] and restore it with
+/// [`Self::from_secret_bytes`].
 ///
 /// ```compile_fail,E0382
 /// # use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
@@ -319,13 +345,57 @@ impl ChannelConsumer {
 /// opener.open_from_enclave(&response)?; // the opener was consumed above
 /// # Ok::<(), pontifex::ChannelError>(())
 /// ```
-#[derive(Debug)]
 pub struct ResponseOpener {
 	domain: ChannelDomain,
+	seed: Zeroizing<[u8; SEED_LEN]>,
 	response_sk: SecretKey,
 }
 
+impl std::fmt::Debug for ResponseOpener {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("ResponseOpener")
+			.field("domain", &self.domain)
+			.finish_non_exhaustive()
+	}
+}
+
 impl ResponseOpener {
+	/// Exports the opener's secret so it can be stored until the response arrives.
+	///
+	/// # Important
+	/// The bytes are the response key's secret. Anyone holding them can read the response, so store
+	/// them only in secure, device-bound storage (e.g. Keychain or Keystore) and delete them once
+	/// the response is opened. The domain is not included; supply it again to
+	/// [`Self::from_secret_bytes`].
+	#[must_use]
+	pub fn to_secret_bytes(&self) -> Zeroizing<Vec<u8>> {
+		let mut bytes = Zeroizing::new(Vec::with_capacity(1 + SEED_LEN));
+		bytes.push(OPENER_VERSION);
+		bytes.extend_from_slice(self.seed.as_ref());
+		bytes
+	}
+
+	/// Restores an opener exported with [`Self::to_secret_bytes`].
+	///
+	/// A `domain` other than the one the request was sealed under is not detected here; opening the
+	/// response then fails.
+	///
+	/// # Errors
+	///
+	/// Returns [`ChannelError::MalformedOpener`] if `bytes` have the wrong length or version.
+	pub fn from_secret_bytes(domain: ChannelDomain, bytes: &[u8]) -> Result<Self, ChannelError> {
+		let Some((&OPENER_VERSION, seed)) = bytes.split_first() else {
+			return Err(ChannelError::MalformedOpener);
+		};
+		let seed: &[u8; SEED_LEN] = seed.try_into().map_err(|_| ChannelError::MalformedOpener)?;
+
+		Ok(Self {
+			domain,
+			seed: Zeroizing::new(*seed),
+			response_sk: SecretKey::from_seed(seed),
+		})
+	}
+
 	/// Opens the response to this request. Key is zeroized after use.
 	///
 	/// # Errors
@@ -344,8 +414,9 @@ impl ResponseOpener {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
 	use super::{
-		ChannelConsumer, ChannelDomain, ChannelEnclave, ChannelError, REQUEST, RESPONSE,
-		RESPONSE_KEY_LEN, ResponseOpener, SealedBoxError, public_key_commitment,
+		ChannelConsumer, ChannelDomain, ChannelEnclave, ChannelError, OPENER_VERSION, REQUEST,
+		RESPONSE, RESPONSE_KEY_LEN, ResponseOpener, SEED_LEN, SealedBoxError,
+		public_key_commitment,
 	};
 	use quantum_box::{PublicKey, SecretKey};
 
@@ -602,6 +673,77 @@ mod tests {
 	}
 
 	#[test]
+	fn a_restored_opener_opens_the_response() {
+		let enclave = enclave();
+		let (request, opener) = seal(&consumer_for(&enclave, TEST_DOMAIN), b"inputs");
+		let persisted = opener.to_secret_bytes();
+		drop(opener);
+
+		let (_, sealer) = enclave.open(&request).expect("open");
+		let response = sealer.seal(b"result").expect("seal response");
+
+		let restored =
+			ResponseOpener::from_secret_bytes(TEST_DOMAIN, &persisted).expect("restore opener");
+		assert_eq!(
+			restored
+				.open_from_enclave(&response)
+				.expect("open response")
+				.as_slice(),
+			b"result"
+		);
+	}
+
+	#[test]
+	fn persisted_opener_is_a_version_byte_and_a_seed() {
+		let (_, opener) = seal(&consumer_for(&enclave(), TEST_DOMAIN), b"inputs");
+		let persisted = opener.to_secret_bytes();
+
+		assert_eq!(persisted.len(), 1 + SEED_LEN);
+		assert_eq!(persisted[0], OPENER_VERSION);
+	}
+
+	#[test]
+	fn rejects_malformed_persisted_openers() {
+		let (_, opener) = seal(&consumer_for(&enclave(), TEST_DOMAIN), b"inputs");
+		let persisted = opener.to_secret_bytes();
+		let mut wrong_version = persisted.to_vec();
+		wrong_version[0] = OPENER_VERSION + 1;
+
+		for bytes in [
+			&[][..],
+			&[OPENER_VERSION][..],
+			&persisted[..persisted.len() - 1],
+			&[persisted.as_slice(), &[0]].concat(),
+			&wrong_version,
+		] {
+			assert_eq!(
+				ResponseOpener::from_secret_bytes(TEST_DOMAIN, bytes).err(),
+				Some(ChannelError::MalformedOpener),
+				"{} bytes",
+				bytes.len()
+			);
+		}
+	}
+
+	#[test]
+	fn an_opener_restored_under_another_domain_rejects_the_response() {
+		let enclave = enclave();
+		let (request, opener) = seal(&consumer_for(&enclave, TEST_DOMAIN), b"inputs");
+		let (_, sealer) = enclave.open(&request).expect("open");
+		let response = sealer.seal(b"result").expect("seal response");
+
+		let restored = ResponseOpener::from_secret_bytes(
+			ChannelDomain::new("pontifex/other"),
+			&opener.to_secret_bytes(),
+		)
+		.expect("restore opener");
+		assert_eq!(
+			restored.open_from_enclave(&response).err(),
+			Some(ChannelError::SealedBox(SealedBoxError::Unseal))
+		);
+	}
+
+	#[test]
 	fn keys_are_generated_randomly() {
 		assert_ne!(enclave().public_key(), enclave().public_key());
 	}
@@ -625,6 +767,12 @@ mod tests {
 			r#"ChannelConsumer { domain: ChannelDomain { name: "pontifex/test" }, .. }"#
 		);
 		assert_eq!(format!("{sealer:?}"), "ResponseSealer { .. }");
+
+		let (_, opener) = seal(&consumer, b"inputs");
+		assert_eq!(
+			format!("{opener:?}"),
+			r#"ResponseOpener { domain: ChannelDomain { name: "pontifex/test" }, .. }"#
+		);
 	}
 
 	#[cfg(feature = "attestation")]
