@@ -346,8 +346,6 @@ mod wasm_tests {
 	use super::{ChannelConsumer, ChannelDomain, ChannelEnclave};
 	use wasm_bindgen_test::wasm_bindgen_test;
 
-	wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
-
 	#[wasm_bindgen_test]
 	fn round_trips_a_request_and_response_in_worker() {
 		let domain = ChannelDomain::new("pontifex/wasm-test");
