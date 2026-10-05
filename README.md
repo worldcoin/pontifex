@@ -137,6 +137,20 @@ let sealed_response = sealer.seal(b"result")?;
 let result = opener.open_from_enclave(&sealed_response)?;
 ```
 
+A consumer that may not stay alive until the response arrives (e.g. a mobile app) can persist the opener in secure storage and restore it later. The bytes are the response key's secret.
+
+```rust,ignore
+use pontifex::channel::ResponseOpener;
+
+let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;
+secure_storage.set("opener", &opener.to_secret_bytes())?;
+
+// ... later, possibly after a restart ...
+let opener = ResponseOpener::from_secret_bytes(DOMAIN, &secure_storage.get("opener")?)?;
+let result = opener.open_from_enclave(&sealed_response)?;
+secure_storage.delete("opener")?;
+```
+
 ## Releases
 
 Releases are automated with [release-plz](https://release-plz.dev)
