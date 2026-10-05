@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1](https://github.com/worldcoin/pontifex/compare/3.0.0...3.0.1) - 2026-10-05
+
+### Other
+
+- *(deps)* update getrandom requirement from 0.2 to 0.4 ([#62](https://github.com/worldcoin/pontifex/pull/62))
+- *(deps)* bump taiki-e/install-action from 2.87.4 to 2.87.14 ([#60](https://github.com/worldcoin/pontifex/pull/60))
+- *(deps)* bump release-plz/action from 0.5.131 to 0.5.138 ([#59](https://github.com/worldcoin/pontifex/pull/59))
+- *(deps)* update p384 requirement from 0.13 to 0.14 ([#56](https://github.com/worldcoin/pontifex/pull/56))
+- *(deps)* update sha2 requirement from 0.10 to 0.11 ([#54](https://github.com/worldcoin/pontifex/pull/54))
+- *(deps)* update base64 requirement from 0.22 to 0.23 ([#58](https://github.com/worldcoin/pontifex/pull/58))
+- release v3.0.0 ([#52](https://github.com/worldcoin/pontifex/pull/52))
+
 ## [3.0.0](https://github.com/worldcoin/pontifex/compare/2.1.0...3.0.0) - 2026-09-30
 
 ### Added
