@@ -349,7 +349,7 @@ mod wasm_tests {
 	wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
 	#[wasm_bindgen_test]
-	fn round_trips_a_request_and_response_in_browser() {
+	fn round_trips_a_request_and_response_in_worker() {
 		let domain = ChannelDomain::new("pontifex/wasm-test");
 		let enclave = ChannelEnclave::generate(domain).expect("browser CSPRNG available");
 		let consumer = ChannelConsumer::from_unverified_public_key(domain, &enclave.public_key())

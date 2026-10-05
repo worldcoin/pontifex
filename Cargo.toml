@@ -52,6 +52,7 @@ attestation = [
     "dep:webpki",
     "dep:x509-cert",
     "dep:web-time",
+    # Enables webpki's ring/getrandom backend on browser WASM.
     "dep:ring",
 ]
 
@@ -131,6 +132,6 @@ wasm-bindgen-test = "=0.3.76"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 quantum-box = { version = "0.2", features = ["wasm_js"], optional = true }
-# Not imported: routes webpki's `ring` to getrandom's browser backend.
+# Not imported: enables ring's getrandom 0.2 to compile on wasm32-unknown-unknown.
 ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"], optional = true }
 web-time = { version = "1", optional = true }

@@ -1,10 +1,4 @@
-#![deny(
-	clippy::all,
-	clippy::pedantic,
-	clippy::nursery,
-	missing_docs,
-	dead_code
-)]
+#![deny(clippy::all, clippy::pedantic, clippy::nursery, missing_docs)]
 #![doc = include_str!("../README.md")]
 
 use const_fnv1a_hash::fnv1a_hash_str_32;
