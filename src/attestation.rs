@@ -963,8 +963,6 @@ mod browser_tests {
 	};
 	use wasm_bindgen_test::wasm_bindgen_test;
 
-	wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
-
 	#[wasm_bindgen_test]
 	fn expired_certificate_is_rejected_using_the_browser_clock() {
 		let verifier = Verifier::new(vec![pcr0_only()], TEN_YEARS);

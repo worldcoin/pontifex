@@ -6,6 +6,7 @@
 pub use aws_nitro_enclaves_nsm_api::api::{ErrorCode, Request, Response};
 use std::collections::BTreeMap;
 
+#[cfg(any(feature = "nsm", feature = "attestation"))]
 use coset::{CborSerializable, CoseSign1};
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;

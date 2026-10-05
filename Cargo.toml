@@ -14,6 +14,9 @@ keywords = ["aws", "amazon", "enclave", "nitro", "attestation"]
 categories = ["cryptography", "hardware-support", "development-tools::ffi"]
 description = "An abstraction for building and interacting with AWS Nitro enclaves."
 
+[lints.rust]
+unused = { level = "deny", priority = -1 }
+
 [features]
 default=["http"]
 client = ["dep:tokio-vsock", "dep:rmp-serde"]
@@ -49,7 +52,8 @@ attestation = [
     "dep:webpki",
     "dep:x509-cert",
     "dep:web-time",
-    "dep:getrandom",
+    # Enables webpki's ring/getrandom backend on browser WASM.
+    "dep:ring",
 ]
 
 # Internal: The HTTPS-over-vsock transport, shared by `http` and `kms`.
@@ -127,6 +131,7 @@ aws-smithy-runtime-api = { version = "1.9", features = ["client", "http-1x", "te
 wasm-bindgen-test = "=0.3.76"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.2", features = ["js"], optional = true }
 quantum-box = { version = "0.2", features = ["wasm_js"], optional = true }
+# Not imported: enables ring's getrandom 0.2 to compile on wasm32-unknown-unknown.
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"], optional = true }
 web-time = { version = "1", optional = true }
