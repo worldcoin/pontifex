@@ -115,7 +115,7 @@ p384 = { version = "0.13", default-features = false, features = ["ecdsa", "sha38
 
 [dev-dependencies]
 aws-nitro-enclaves-nsm-api = { version = "0.5", default-features = false }
-base64 = "0.22"
+base64 = "0.23"
 hex-literal = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
