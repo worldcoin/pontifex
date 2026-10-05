@@ -111,7 +111,7 @@ coset = { version = "0.4", optional = true }
 ciborium = { version = "0.2", optional = true }
 webpki = { version = "0.22", optional = true }
 x509-cert = { version = "0.2", optional = true }
-p384 = { version = "0.13", default-features = false, features = ["ecdsa", "sha384"], optional = true }
+p384 = { version = "0.14", default-features = false, features = ["ecdsa", "sha384"], optional = true }
 
 [dev-dependencies]
 aws-nitro-enclaves-nsm-api = { version = "0.5", default-features = false }
