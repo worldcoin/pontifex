@@ -341,6 +341,29 @@ impl ResponseOpener {
 	}
 }
 
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+	use super::{ChannelConsumer, ChannelDomain, ChannelEnclave};
+	use wasm_bindgen_test::wasm_bindgen_test;
+
+	wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
+
+	#[wasm_bindgen_test]
+	fn round_trips_a_request_and_response_in_browser() {
+		let domain = ChannelDomain::new("pontifex/wasm-test");
+		let enclave = ChannelEnclave::generate(domain).expect("browser CSPRNG available");
+		let consumer = ChannelConsumer::from_unverified_public_key(domain, &enclave.public_key())
+			.expect("enclave public key parses");
+		let (request, opener) = consumer.seal_to_enclave(b"inputs").expect("request seals");
+		let (plaintext, sealer) = enclave.open(&request).expect("request opens");
+		assert_eq!(plaintext.as_slice(), b"inputs");
+
+		let response = sealer.seal(b"result").expect("response seals");
+		let plaintext = opener.open_from_enclave(&response).expect("response opens");
+		assert_eq!(plaintext.as_slice(), b"result");
+	}
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
 	use super::{
