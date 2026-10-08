@@ -32,8 +32,8 @@ pub use zeroize::Zeroizing;
 /// Length of an X-Wing encapsulation key: ML-KEM-768 (1184) plus X25519 (32).
 const RESPONSE_KEY_LEN: usize = 1216;
 
-/// Domain separator for [`public_key_commitment`].
-const COMMITMENT_DOMAIN: &[u8] = b"pontifex/public-key-commitment/v1\0";
+/// Default domain separator for key commitments, see [`ChannelDomain::with_key_commitment_domain`].
+const DEFAULT_KEY_COMMITMENT_DOMAIN: &[u8] = b"pontifex/public-key-commitment/v1\0";
 
 const REQUEST: u8 = 0;
 const RESPONSE: u8 = 1;
@@ -71,13 +71,36 @@ pub enum ChannelError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChannelDomain {
 	name: &'static str,
+	key_commitment_domain: &'static [u8],
 }
 
 impl ChannelDomain {
 	/// Names a channel domain. A good idea is to anchor it on the enclave's `module_id` (e.g. hash).
 	#[must_use]
 	pub const fn new(name: &'static str) -> Self {
-		Self { name }
+		Self {
+			name,
+			key_commitment_domain: DEFAULT_KEY_COMMITMENT_DOMAIN,
+		}
+	}
+
+	/// Replaces the domain separator of the key commitment, for protocols that define their own.
+	#[must_use]
+	pub const fn with_key_commitment_domain(self, key_commitment_domain: &'static [u8]) -> Self {
+		Self {
+			key_commitment_domain,
+			..self
+		}
+	}
+
+	/// Commitment to a `public_key` under this domain's key commitment domain.
+	#[must_use]
+	pub fn public_key_commitment(&self, public_key: &[u8]) -> [u8; 32] {
+		Sha256::new()
+			.chain_update(self.key_commitment_domain)
+			.chain_update(public_key)
+			.finalize()
+			.into()
 	}
 
 	fn info(&self, direction: u8) -> Vec<u8> {
@@ -124,7 +147,7 @@ impl ChannelEnclave {
 	/// Commitment to [`Self::public_key`] to be attested.
 	#[must_use]
 	pub fn public_key_commitment(&self) -> [u8; 32] {
-		public_key_commitment(&self.public_key())
+		self.domain.public_key_commitment(&self.public_key())
 	}
 
 	/// Opens a sealed request, returning the plaintext and the sealer for its one response.
@@ -157,17 +180,13 @@ impl ChannelEnclave {
 	}
 }
 
-/// Commitment to a `public_key`.
+/// Commitment to a `public_key` under the default key commitment domain.
 ///
 /// # Rationale
 /// A commitment is used instead of raw key because X-Wing's pk exceeds max size.
 #[must_use]
 pub fn public_key_commitment(public_key: &[u8]) -> [u8; 32] {
-	Sha256::new()
-		.chain_update(COMMITMENT_DOMAIN)
-		.chain_update(public_key)
-		.finalize()
-		.into()
+	ChannelDomain::new("").public_key_commitment(public_key)
 }
 
 /// Seals a one-time response back to the consumer.
@@ -236,7 +255,7 @@ impl ChannelConsumer {
 	) -> Result<(Self, VerifiedAttestation), ChannelError> {
 		let attestation = verifier.verify_attestation_document(attestation_doc)?;
 
-		let expected = public_key_commitment(enclave_public_key);
+		let expected = domain.public_key_commitment(enclave_public_key);
 		let attested = attestation.document().public_key.as_ref();
 
 		if let Some(attested) = attested {
@@ -643,7 +662,7 @@ mod tests {
 
 		assert_eq!(
 			format!("{consumer:?}"),
-			r#"ChannelConsumer { domain: ChannelDomain { name: "pontifex/test" }, .. }"#
+			r#"ChannelConsumer { domain: ChannelDomain { name: "pontifex/test", key_commitment_domain: [112, 111, 110, 116, 105, 102, 101, 120, 47, 112, 117, 98, 108, 105, 99, 45, 107, 101, 121, 45, 99, 111, 109, 109, 105, 116, 109, 101, 110, 116, 47, 118, 49, 0] }, .. }"#
 		);
 		assert_eq!(format!("{sealer:?}"), "ResponseSealer { .. }");
 	}
@@ -694,6 +713,31 @@ mod tests {
 		assert_eq!(
 			public_key_commitment(b"key"),
 			hex_literal::hex!("77634addf9ae031e3d621410d643d1f13b7d426876627b53d89ea0f7bba71cfb")
+		);
+	}
+
+	#[test]
+	fn custom_key_commitment_domain_changes_the_commitment() {
+		let custom = TEST_DOMAIN.with_key_commitment_domain(b"custom/domain\0");
+
+		assert_eq!(
+			TEST_DOMAIN.public_key_commitment(b"key"),
+			public_key_commitment(b"key")
+		);
+		assert_ne!(
+			custom.public_key_commitment(b"key"),
+			public_key_commitment(b"key")
+		);
+	}
+
+	#[test]
+	fn enclave_commits_under_its_domain() {
+		let domain = TEST_DOMAIN.with_key_commitment_domain(b"custom/domain\0");
+		let enclave = ChannelEnclave::generate(domain).expect("generate");
+
+		assert_eq!(
+			enclave.public_key_commitment(),
+			domain.public_key_commitment(&enclave.public_key())
 		);
 	}
 
