@@ -33,7 +33,7 @@ pub use zeroize::Zeroizing;
 const RESPONSE_KEY_LEN: usize = 1216;
 
 /// Default domain separator for key commitments, see [`ChannelDomain::with_key_commitment_domain`].
-const COMMITMENT_DOMAIN: &[u8] = b"pontifex/public-key-commitment/v1\0";
+const DEFAULT_KEY_COMMITMENT_DOMAIN: &[u8] = b"pontifex/public-key-commitment/v1\0";
 
 const REQUEST: u8 = 0;
 const RESPONSE: u8 = 1;
@@ -80,7 +80,7 @@ impl ChannelDomain {
 	pub const fn new(name: &'static str) -> Self {
 		Self {
 			name,
-			key_commitment_domain: COMMITMENT_DOMAIN,
+			key_commitment_domain: DEFAULT_KEY_COMMITMENT_DOMAIN,
 		}
 	}
 
