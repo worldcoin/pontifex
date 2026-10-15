@@ -45,6 +45,16 @@ kms = [
     "dep:aws-smithy-runtime-api",
 ]
 
+# Host-side vsock-to-TCP proxy, which the enclave's `http` and `kms` clients dial.
+proxy = [
+    "dep:tokio-vsock",
+    "tokio/macros",
+    "tokio/net",
+    "tokio/rt",
+    "tokio/sync",
+    "tokio/time",
+]
+
 # Client-side verification of Nitro attestation documents.
 attestation = [
     "nsm-types",

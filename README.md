@@ -137,6 +137,25 @@ let sealed_response = sealer.seal(b"result")?;
 let result = opener.open_from_enclave(&sealed_response)?;
 ```
 
+### Outbound Proxy
+
+The `proxy` feature runs on the parent instance and forwards the enclave's outbound vsock connections, such as those of the `http` and `kms` clients, to one fixed TCP destination. It replaces a separate `vsock-proxy` process: it runs inside the host's own process, admits only the configured enclave CID, bounds concurrent connections, and reports every outcome for metrics.
+
+TLS terminates inside the enclave, so the proxy only relays ciphertext.
+
+```rust,ignore
+use pontifex::proxy::{self, Config, Event};
+
+let mut config = Config::new(8000, "kms.eu-central-1.amazonaws.com", 443);
+config.allowed_cid = Some(enclave_cid);
+
+// Only returns on an invalid configuration or a failed bind.
+proxy::serve(config, |event| match event {
+    Event::Closed { outcome, duration } => { /* count `outcome`, record `duration` */ },
+    other => { /* count rejections and accept failures */ },
+}).await?;
+```
+
 ## Releases
 
 Releases are automated with [release-plz](https://release-plz.dev)
