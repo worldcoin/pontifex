@@ -20,7 +20,7 @@ unused = { level = "deny", priority = -1 }
 [features]
 default=["http"]
 client = ["dep:tokio-vsock", "dep:rmp-serde"]
-server = ["tokio/rt", "dep:tokio-vsock", "dep:rmp-serde"]
+server = ["tokio/rt", "tokio/time", "dep:tokio-vsock", "dep:rmp-serde"]
 nsm = ["nsm-types", "dep:aws-nitro-enclaves-nsm-api", "aws-nitro-enclaves-nsm-api/nix", "tokio/sync"]
 nsm-types = [
     "dep:coset",

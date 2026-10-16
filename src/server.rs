@@ -6,6 +6,7 @@ pub use crate::utils::CodingKey;
 use crate::{Request, utils::Stream};
 
 const VMADDR_CID_ANY: u32 = 0xFFFF_FFFF;
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -16,6 +17,7 @@ pub enum Error {
 	#[error("Failed to bind to vsock address: {0}")]
 	Bind(io::Error),
 	/// Failed to accept connection.
+	#[deprecated(note = "`Router::serve` now logs accept failures and keeps serving")]
 	#[error("Failed to accept connection: {0}")]
 	Accept(io::Error),
 	/// Failed to connect to NSM.
@@ -294,12 +296,11 @@ where
 		self.allowed_cid.is_none_or(|allowed| allowed == cid)
 	}
 
-	/// Start serving requests on the specified port.
+	/// Start serving requests on the specified port. Failed accepts are logged and skipped.
 	///
 	/// # Errors
 	///
 	/// - `Error::Bind`: Failed to bind to the vsock address
-	/// - `Error::Accept`: Failed to accept incoming connection
 	/// - `Error::Nsm`: Failed to connect to NSM (if feature enabled)
 	pub async fn serve(self, port: u32) -> Result<(), Error> {
 		let listener =
@@ -318,7 +319,15 @@ where
 		let router = Arc::new(self);
 
 		loop {
-			let (stream, peer) = listener.accept().await.map_err(Error::Accept)?;
+			let (stream, peer) = match listener.accept().await {
+				Ok(accepted) => accepted,
+				Err(error) => {
+					// Transient (e.g. `EMFILE`); the pause keeps a persistent failure from spinning.
+					tracing::warn!(%error, "failed to accept a connection");
+					tokio::time::sleep(ACCEPT_BACKOFF).await;
+					continue;
+				},
+			};
 			if !router.admits(peer.cid()) {
 				tracing::warn!(
 					cid = peer.cid(),
