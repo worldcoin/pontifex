@@ -290,7 +290,7 @@ where
 		self
 	}
 
-	fn admits(&self, cid: u32) -> bool {
+	pub(crate) fn admits(&self, cid: u32) -> bool {
 		self.allowed_cid.is_none_or(|allowed| allowed == cid)
 	}
 

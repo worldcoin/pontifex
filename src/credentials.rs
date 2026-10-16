@@ -6,9 +6,8 @@
 //! cannot redirect them, and the host already holds them.
 //!
 //! ```rust,ignore
-//! // Host. Restrict to the enclave: vsock is not namespaced, so other pods could ask too.
-//! credentials::router(provider, |result| record_metric(result))
-//!     .allowed_cid(enclave_cid)
+//! // Host. Answers only `enclave_cid`: vsock is not namespaced, so other pods could ask too.
+//! credentials::router(provider, enclave_cid, |result| record_metric(result))
 //!     .serve(CREDENTIALS_PORT)
 //!     .await?;
 //! ```
@@ -161,12 +160,13 @@ mod host {
 		on_result: F,
 	}
 
-	/// A router answering [`GetCredentials`] from `provider`.
+	/// A router answering [`GetCredentials`] from `provider`, only for `enclave_cid`.
 	///
-	/// Restrict it with [`Router::allowed_cid`] before serving. `on_result` runs once per
-	/// request, for metrics; failures are also logged at `warn`, without credential material.
+	/// `on_result` runs once per request, for metrics; failures are also logged at `warn`,
+	/// without credential material.
 	pub fn router<F>(
 		provider: SharedCredentialsProvider,
+		enclave_cid: u32,
 		on_result: F,
 	) -> Router<impl Clone + Send + Sync + 'static>
 	where
@@ -177,6 +177,7 @@ mod host {
 			on_result,
 		}))
 		.route::<GetCredentials, _, _>(|state, _| async move { handle(&state).await })
+		.allowed_cid(enclave_cid)
 	}
 
 	async fn handle<F>(state: &State<F>) -> Result<WireCredentials, CredentialsUnavailable>
@@ -295,6 +296,20 @@ mod host {
 				serve_one(Credentials::for_tests()).await,
 				(expected, vec![expected])
 			);
+		}
+
+		#[test]
+		fn the_router_answers_only_the_enclave() {
+			let router = super::router(
+				SharedCredentialsProvider::new(Credentials::for_tests()),
+				16,
+				|_| {},
+			);
+
+			assert!(router.admits(16));
+			for stranger in [1, 2, 3, 17] {
+				assert!(!router.admits(stranger));
+			}
 		}
 
 		#[tokio::test(start_paused = true)]
