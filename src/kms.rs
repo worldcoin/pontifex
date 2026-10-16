@@ -7,6 +7,7 @@ use std::{
 	time::Duration,
 };
 
+use aws_credential_types::provider::ProvideCredentials;
 use aws_sdk_kms::config::SharedCredentialsProvider;
 use aws_smithy_runtime_api::client::{
 	connection::{CaptureSmithyConnection, ConnectionMetadata},
@@ -64,7 +65,10 @@ impl Credentials {
 	}
 }
 
-/// Creates a new KMS client.
+/// Creates a new KMS client with fixed credentials.
+///
+/// Fixed credentials expire; prefer [`client_with_credentials`] with
+/// [`ParentCredentials`](crate::aws_credentials::ParentCredentials).
 ///
 /// # Timeouts
 ///
@@ -75,18 +79,37 @@ pub fn client(
 	credentials: Credentials,
 	vsock_proxy_port: u32,
 ) -> aws_sdk_kms::Client {
+	client_with_credentials(
+		config,
+		aws_sdk_kms::config::Credentials::new(
+			credentials.access_key_id,
+			credentials.secret_access_key,
+			credentials.session_token,
+			None,
+			"SDK",
+		),
+		vsock_proxy_port,
+	)
+}
+
+/// Creates a new KMS client that signs with credentials from `provider`.
+///
+/// The SDK's identity cache keeps credentials until shortly before they expire, then asks
+/// `provider` again.
+///
+/// # Timeouts
+///
+/// If no timeouts are set in the `SdkConfig`, sensible defaults will be enforced here.
+#[must_use]
+pub fn client_with_credentials(
+	config: &SdkConfig,
+	provider: impl ProvideCredentials + 'static,
+	vsock_proxy_port: u32,
+) -> aws_sdk_kms::Client {
 	let builder = config
 		.to_builder()
 		.timeout_config(bounded_timeouts(config.timeout_config()))
-		.credentials_provider(SharedCredentialsProvider::new(
-			aws_sdk_kms::config::Credentials::new(
-				credentials.access_key_id,
-				credentials.secret_access_key,
-				credentials.session_token,
-				None,
-				"SDK",
-			),
-		))
+		.credentials_provider(SharedCredentialsProvider::new(provider))
 		.http_client(VSockHttpClient::new(VsockAddr::new(
 			VSOCK_PROXY_CID,
 			vsock_proxy_port,
