@@ -172,6 +172,7 @@ const fn validate(config: &Config) -> Result<(), Error> {
 	Ok(())
 }
 
+/// [`serve`] over any [`Accept`] source, so tests can run without vsock.
 async fn serve_with<A>(
 	listener: A,
 	config: Config,
