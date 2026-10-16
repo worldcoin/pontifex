@@ -158,7 +158,7 @@ aws-smithy-runtime-api = { version = "1.9", features = ["client", "http-1x", "te
 aws-credential-types = { version = "1.2", features = ["test-util"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "=0.3.76"
+wasm-bindgen-test = "=0.3.79"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 quantum-box = { version = "0.2", features = ["wasm_js"], optional = true }
