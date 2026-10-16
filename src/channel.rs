@@ -35,6 +35,9 @@ const RESPONSE_KEY_LEN: usize = 1216;
 /// Length of the X-Wing seed a response key is derived from.
 const SEED_LEN: usize = 32;
 
+/// The seed a response key is derived from; the zeroize check below covers every use of it.
+type Seed = Zeroizing<[u8; SEED_LEN]>;
+
 /// Format version prefixed to [`ResponseOpener::to_secret_bytes`].
 const OPENER_VERSION: u8 = 1;
 
@@ -103,7 +106,7 @@ const _: () = {
 	// Ensures ZeroizeOnDrop is present for `SecretKey` and the persisted seed
 	const fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
 	assert_zeroize_on_drop::<SecretKey>();
-	assert_zeroize_on_drop::<Zeroizing<[u8; SEED_LEN]>>();
+	assert_zeroize_on_drop::<Seed>();
 };
 
 /// The enclave side of a channel. Opens sealed requests and seals the matching responses.
@@ -320,9 +323,9 @@ impl ChannelConsumer {
 ///
 /// `quantum_box::SecretKey` cannot export its seed, so the channel draws and keeps the seed itself
 /// to let a [`ResponseOpener`] be persisted.
-fn generate_seed() -> Result<Zeroizing<[u8; SEED_LEN]>, ChannelError> {
-	let mut seed = Zeroizing::new([0u8; SEED_LEN]);
-	getrandom_04::fill(seed.as_mut()).map_err(|_| SealedBoxError::Rng)?;
+fn generate_seed() -> Result<Seed, ChannelError> {
+	let mut seed = Seed::new([0u8; SEED_LEN]);
+	getrandom::fill(seed.as_mut()).map_err(|_| SealedBoxError::Rng)?;
 	Ok(seed)
 }
 
@@ -347,7 +350,7 @@ fn generate_seed() -> Result<Zeroizing<[u8; SEED_LEN]>, ChannelError> {
 pub struct ResponseOpener {
 	domain: ChannelDomain,
 	/// Seed of the response key, which is derived from it only when the response is opened.
-	seed: Zeroizing<[u8; SEED_LEN]>,
+	seed: Seed,
 }
 
 impl std::fmt::Debug for ResponseOpener {
@@ -390,7 +393,7 @@ impl ResponseOpener {
 
 		Ok(Self {
 			domain,
-			seed: Zeroizing::new(*seed),
+			seed: Seed::new(*seed),
 		})
 	}
 
