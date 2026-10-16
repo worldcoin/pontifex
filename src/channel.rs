@@ -104,6 +104,7 @@ impl ChannelDomain {
 	}
 
 	/// Checks that an attested commitment commits to `public_key` under this domain.
+	#[cfg(feature = "attestation")]
 	fn verify_public_key_commitment(
 		&self,
 		attested: Option<&[u8]>,
@@ -755,6 +756,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "attestation")]
 	fn attested_commitments_are_checked_under_the_channels_domain() {
 		let custom = TEST_DOMAIN.with_key_commitment_domain(b"custom/domain\0");
 
