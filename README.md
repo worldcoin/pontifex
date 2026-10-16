@@ -137,19 +137,42 @@ let sealed_response = sealer.seal(b"result")?;
 let result = opener.open_from_enclave(&sealed_response)?;
 ```
 
-A consumer that may not stay alive until the response arrives (e.g. a mobile app) can persist the opener in secure storage and restore it later. The bytes are the response key's secret.
+### Outbound Proxy
+
+The `proxy` feature runs on the parent instance and forwards the enclave's outbound vsock connections, such as those of the `http` and `kms` clients, to one fixed TCP destination. It replaces a separate `vsock-proxy` process: it runs inside the host's own process, can restrict connections to the enclave's CID (`allowed_cid`), bounds concurrent connections, and reports every outcome for metrics.
+
+TLS terminates inside the enclave, so the proxy only relays ciphertext.
 
 ```rust,ignore
-use pontifex::channel::ResponseOpener;
+use pontifex::proxy::{self, Config, Event};
 
-let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;
-secure_storage.set("opener", &opener.to_secret_bytes())?;
+let mut config = Config::new(8000, "kms.eu-central-1.amazonaws.com", 443);
+config.allowed_cid = Some(enclave_cid);
 
-// ... later, possibly after a restart ...
-let opener = ResponseOpener::from_secret_bytes(DOMAIN, &secure_storage.get("opener")?)?;
-let result = opener.open_from_enclave(&sealed_response)?;
-secure_storage.delete("opener")?;
+// Only returns on an invalid configuration or a failed bind.
+proxy::serve(config, |event| match event {
+    Event::Closed { outcome, duration } => { /* count `outcome`, record `duration` */ },
+    other => { /* count rejections and accept failures */ },
+}).await?;
 ```
+
+### KMS From the Enclave
+
+The `kms` feature builds an AWS KMS client inside the enclave. TLS terminates in the enclave and the traffic leaves through the [outbound proxy](#outbound-proxy). The enclave has no AWS credentials of its own: with the `aws-credentials` feature, the host serves its temporary workload credentials as a Pontifex route, and `aws_credentials::ParentCredentials` fetches and renews them, for KMS or any other AWS SDK client.
+
+```rust,ignore
+// Host. Answers only `enclave_cid`: vsock is not namespaced, so other pods could ask too.
+aws_credentials::router(aws_config.credentials_provider().unwrap(), enclave_cid, |result| { /* count `result` */ })
+    .serve(CREDENTIALS_PORT)
+    .await?;
+
+// Enclave
+use pontifex::{aws_credentials::ParentCredentials, kms};
+
+let client = kms::client_with_credentials(&sdk_config, ParentCredentials::new(CREDENTIALS_PORT), PROXY_PORT);
+```
+
+Only temporary credentials with at least 60 seconds of validity are sent; static ones are refused on both sides. `Router::allowed_cid` works for any router on the host.
 
 ## Releases
 
