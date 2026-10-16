@@ -12,7 +12,7 @@ use std::{
 
 use aws_credential_types::Credentials;
 use serde::{Deserialize, Serialize};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const MAX_FRAME: usize = 16 * 1024;
 const MAX_KEY_LEN: usize = 128;
@@ -46,20 +46,12 @@ impl From<WireError> for io::Error {
 	}
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct WireCredentials {
 	access_key_id: String,
 	secret_access_key: String,
 	session_token: String,
 	expires_at: u64,
-}
-
-impl Drop for WireCredentials {
-	fn drop(&mut self) {
-		self.access_key_id.zeroize();
-		self.secret_access_key.zeroize();
-		self.session_token.zeroize();
-	}
 }
 
 impl WireCredentials {

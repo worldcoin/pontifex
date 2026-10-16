@@ -81,6 +81,7 @@ _credentials-wire = [
     "dep:rmp-serde",
     "dep:zeroize",
     "serde/derive",
+    "zeroize/derive",
 ]
 
 # Internal: The HTTPS-over-vsock transport, shared by `http` and `kms`.
