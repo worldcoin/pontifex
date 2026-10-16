@@ -94,6 +94,14 @@ pub use attestation::{PcrConfig, PcrMeasurement, Verifier};
 #[cfg(feature = "kms")]
 pub mod kms;
 
+/// Host-side vsock-to-TCP proxy for the enclave's outbound connections.
+#[cfg(feature = "proxy")]
+pub mod proxy;
+
+/// Temporary AWS credentials, served by the host to the enclave.
+#[cfg(any(feature = "kms", feature = "aws-credentials"))]
+pub mod aws_credentials;
+
 /// HTTP-through-vsock
 #[cfg(feature = "http")]
 pub mod http;

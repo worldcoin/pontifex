@@ -6,6 +6,7 @@ pub use crate::utils::CodingKey;
 use crate::{Request, utils::Stream};
 
 const VMADDR_CID_ANY: u32 = 0xFFFF_FFFF;
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -16,6 +17,7 @@ pub enum Error {
 	#[error("Failed to bind to vsock address: {0}")]
 	Bind(io::Error),
 	/// Failed to accept connection.
+	#[deprecated(note = "`Router::serve` now logs accept failures and keeps serving")]
 	#[error("Failed to accept connection: {0}")]
 	Accept(io::Error),
 	/// Failed to connect to NSM.
@@ -175,6 +177,7 @@ where
 pub struct Router<S = ()> {
 	routes: HashMap<u32, Box<dyn Handler<S>>>, // Maps type IDs to their handlers
 	state: S,                                  // Shared application state
+	allowed_cid: Option<u32>,                  // Only peer accepted, if set
 }
 
 impl Router<()> {
@@ -196,6 +199,7 @@ impl Router<()> {
 		Self {
 			routes: HashMap::new(),
 			state: (),
+			allowed_cid: None,
 		}
 	}
 }
@@ -227,6 +231,7 @@ where
 		Self {
 			routes: HashMap::new(),
 			state,
+			allowed_cid: None,
 		}
 	}
 
@@ -277,12 +282,25 @@ where
 		self
 	}
 
-	/// Start serving requests on the specified port.
+	/// Only accept connections from `cid`, dropping all others.
+	///
+	/// Use it whenever the router runs on the host: vsock is not namespaced, so other processes,
+	/// enclaves or pods on the same machine can otherwise reach it.
+	#[must_use]
+	pub const fn allowed_cid(mut self, cid: u32) -> Self {
+		self.allowed_cid = Some(cid);
+		self
+	}
+
+	pub(crate) fn admits(&self, cid: u32) -> bool {
+		self.allowed_cid.is_none_or(|allowed| allowed == cid)
+	}
+
+	/// Start serving requests on the specified port. Failed accepts are logged and skipped.
 	///
 	/// # Errors
 	///
 	/// - `Error::Bind`: Failed to bind to the vsock address
-	/// - `Error::Accept`: Failed to accept incoming connection
 	/// - `Error::Nsm`: Failed to connect to NSM (if feature enabled)
 	pub async fn serve(self, port: u32) -> Result<(), Error> {
 		let listener =
@@ -301,7 +319,22 @@ where
 		let router = Arc::new(self);
 
 		loop {
-			let (stream, _) = listener.accept().await.map_err(Error::Accept)?;
+			let (stream, peer) = match listener.accept().await {
+				Ok(accepted) => accepted,
+				Err(error) => {
+					// Transient (e.g. `EMFILE`); the pause keeps a persistent failure from spinning.
+					tracing::warn!(%error, "failed to accept a connection");
+					tokio::time::sleep(ACCEPT_BACKOFF).await;
+					continue;
+				},
+			};
+			if !router.admits(peer.cid()) {
+				tracing::warn!(
+					cid = peer.cid(),
+					"rejected a connection from an unexpected peer"
+				);
+				continue;
+			}
 			let mut stream = Stream::new(stream);
 			let router = router.clone();
 
@@ -339,4 +372,20 @@ where
 	// 2. Call the user's handler function with typed parameters
 	// 3. Serialize and send the typed response
 	handler.handle(stream, router.state.clone()).await
+}
+
+#[cfg(test)]
+mod tests {
+	use super::Router;
+
+	#[test]
+	fn an_allowed_cid_admits_only_that_peer() {
+		assert!(Router::new().admits(17), "no restriction by default");
+
+		let router = Router::new().allowed_cid(16);
+		assert!(router.admits(16));
+		for stranger in [1, 2, 3, 17] {
+			assert!(!router.admits(stranger));
+		}
+	}
 }
