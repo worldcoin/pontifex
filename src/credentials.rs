@@ -131,8 +131,10 @@ pub async fn serve(
 	provider: SharedCredentialsProvider,
 	on_event: impl Fn(Event) + Send + Sync + 'static,
 ) -> Result<Infallible, Error> {
-	if config.max_connections == 0 {
-		return Err(Error::InvalidConfig("max_connections is 0"));
+	if config.max_connections == 0 || config.max_connections > tokio::sync::Semaphore::MAX_PERMITS {
+		return Err(Error::InvalidConfig(
+			"max_connections must be between 1 and Semaphore::MAX_PERMITS",
+		));
 	}
 	let listener =
 		VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, config.port)).map_err(|source| {
