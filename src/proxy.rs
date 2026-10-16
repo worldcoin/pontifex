@@ -217,6 +217,7 @@ where
 	.await
 }
 
+/// Connects to the destination and relays `downstream` until it closes, fails or idles out.
 async fn forward<S>(downstream: S, config: &Config) -> Outcome
 where
 	S: AsyncRead + AsyncWrite + Unpin,
