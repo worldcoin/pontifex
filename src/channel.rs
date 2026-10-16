@@ -103,6 +103,21 @@ impl ChannelDomain {
 			.into()
 	}
 
+	/// Checks that an attested commitment commits to `public_key` under this domain.
+	fn verify_public_key_commitment(
+		&self,
+		attested: Option<&[u8]>,
+		public_key: &[u8],
+	) -> Result<(), ChannelError> {
+		match attested {
+			None => Err(ChannelError::EmptyPublicKey),
+			Some(attested) if attested != self.public_key_commitment(public_key) => {
+				Err(ChannelError::KeyCommitmentMismatch)
+			},
+			Some(_) => Ok(()),
+		}
+	}
+
 	fn info(&self, direction: u8) -> Vec<u8> {
 		let mut info = self.name.as_bytes().to_vec();
 		info.push(direction);
@@ -255,16 +270,14 @@ impl ChannelConsumer {
 	) -> Result<(Self, VerifiedAttestation), ChannelError> {
 		let attestation = verifier.verify_attestation_document(attestation_doc)?;
 
-		let expected = domain.public_key_commitment(enclave_public_key);
-		let attested = attestation.document().public_key.as_ref();
-
-		if let Some(attested) = attested {
-			if attested.as_slice() != expected {
-				return Err(ChannelError::KeyCommitmentMismatch);
-			}
-		} else {
-			return Err(ChannelError::EmptyPublicKey);
-		}
+		domain.verify_public_key_commitment(
+			attestation
+				.document()
+				.public_key
+				.as_ref()
+				.map(|key| key.as_slice()),
+			enclave_public_key,
+		)?;
 
 		let consumer = Self {
 			domain,
@@ -739,6 +752,25 @@ mod tests {
 			enclave.public_key_commitment(),
 			domain.public_key_commitment(&enclave.public_key())
 		);
+	}
+
+	#[test]
+	fn attested_commitments_are_checked_under_the_channels_domain() {
+		let custom = TEST_DOMAIN.with_key_commitment_domain(b"custom/domain\0");
+
+		assert!(
+			custom
+				.verify_public_key_commitment(Some(&custom.public_key_commitment(b"key")), b"key")
+				.is_ok()
+		);
+		assert!(matches!(
+			custom.verify_public_key_commitment(Some(&public_key_commitment(b"key")), b"key"),
+			Err(ChannelError::KeyCommitmentMismatch)
+		));
+		assert!(matches!(
+			custom.verify_public_key_commitment(None, b"key"),
+			Err(ChannelError::EmptyPublicKey)
+		));
 	}
 
 	#[test]
