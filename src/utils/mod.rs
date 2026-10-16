@@ -15,6 +15,9 @@ use {
 #[cfg(any(feature = "http", feature = "kms"))]
 pub mod http;
 
+#[cfg(feature = "proxy")]
+pub mod connections;
+
 /// The piece of data that was being read/written when an error occurred.
 #[derive(Debug)]
 #[allow(

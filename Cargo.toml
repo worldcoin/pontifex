@@ -45,6 +45,15 @@ kms = [
     "dep:aws-smithy-runtime-api",
 ]
 
+# Host-side vsock-to-TCP proxy, which the enclave's `http` and `kms` clients dial.
+proxy = [
+    "dep:futures-util",
+    "dep:tokio-vsock",
+    "tokio/macros",
+    "tokio/net",
+    "tokio/time",
+]
+
 # Client-side verification of Nitro attestation documents.
 attestation = [
     "nsm-types",
@@ -79,6 +88,7 @@ rmp-serde = { version = "1", optional = true }
 tokio-vsock = { version = "0.7", optional = true }
 tokio = { version = "1", features = ["io-util"] }
 aws-types = { version = "1", optional = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["alloc"] }
 serde_bytes = { version = "0.11", optional = true }
 tower-service = { version = "0.3", optional = true }
 hyper = { version = "1", features = ["client"], optional = true }
