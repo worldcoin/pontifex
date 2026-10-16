@@ -24,6 +24,7 @@ use std::{
 use tokio::{
 	io::{AsyncRead, AsyncWrite, ReadBuf},
 	net::TcpStream,
+	sync::Semaphore,
 	time::Instant,
 };
 use tokio_vsock::{VsockAddr, VsockListener};
@@ -162,8 +163,10 @@ const fn validate(config: &Config) -> Result<(), Error> {
 	if config.destination_port == 0 {
 		return Err(Error::InvalidConfig("destination port is 0"));
 	}
-	if config.max_connections == 0 {
-		return Err(Error::InvalidConfig("max_connections is 0"));
+	if config.max_connections == 0 || config.max_connections > Semaphore::MAX_PERMITS {
+		return Err(Error::InvalidConfig(
+			"max_connections must be between 1 and Semaphore::MAX_PERMITS",
+		));
 	}
 
 	Ok(())
@@ -479,11 +482,14 @@ mod tests {
 	fn configurations_that_cannot_serve_are_rejected() {
 		let mut no_slots = Config::new(8000, "kms.eu-central-1.amazonaws.com", 443);
 		no_slots.max_connections = 0;
+		let mut unbounded = Config::new(8000, "kms.eu-central-1.amazonaws.com", 443);
+		unbounded.max_connections = usize::MAX;
 
 		for config in [
 			Config::new(8000, "", 443),
 			Config::new(8000, "kms.eu-central-1.amazonaws.com", 0),
 			no_slots,
+			unbounded,
 		] {
 			assert!(matches!(validate(&config), Err(Error::InvalidConfig(_))));
 		}
