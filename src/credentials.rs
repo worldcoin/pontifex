@@ -9,8 +9,7 @@
 //! use pontifex::credentials::{self, Config};
 //!
 //! let aws_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-//! let mut config = Config::new(8001);
-//! config.allowed_cid = Some(enclave_cid);
+//! let config = Config::new(8001, enclave_cid);
 //! credentials::serve(config, aws_config.credentials_provider().unwrap(), |event| record_metric(event)).await?;
 //! ```
 
@@ -36,8 +35,9 @@ const VMADDR_CID_ANY: u32 = 0xFFFF_FFFF;
 pub struct Config {
 	/// vsock port the enclave dials on the parent.
 	pub port: u32,
-	/// Only this CID may connect. `None` admits any peer.
-	pub allowed_cid: Option<u32>,
+	/// The only CID that may connect. Required: vsock is not namespaced, so other processes or
+	/// pods on the node could otherwise read the host's credentials.
+	pub allowed_cid: u32,
 	/// Exchanges served at once; further connections are dropped and reported.
 	pub max_connections: usize,
 	/// Bounds one exchange, including a provider refresh.
@@ -45,12 +45,12 @@ pub struct Config {
 }
 
 impl Config {
-	/// A server on `port`, admitting any peer.
+	/// A server on `port` that only answers `allowed_cid`.
 	#[must_use]
-	pub const fn new(port: u32) -> Self {
+	pub const fn new(port: u32, allowed_cid: u32) -> Self {
 		Self {
 			port,
-			allowed_cid: None,
+			allowed_cid,
 			max_connections: 8,
 			timeout: Duration::from_secs(3),
 		}
@@ -156,7 +156,7 @@ where
 	A::Stream: AsyncRead + AsyncWrite + Unpin,
 {
 	let limits = Limits {
-		allowed_cid: config.allowed_cid,
+		allowed_cid: Some(config.allowed_cid),
 		max_connections: config.max_connections,
 	};
 	let timeout = config.timeout;
@@ -272,8 +272,7 @@ mod tests {
 		let (queue, listener) = QueuedListener::new();
 		let events = Arc::new(Mutex::new(Vec::new()));
 		let sink = Arc::clone(&events);
-		let mut config = Config::new(8001);
-		config.allowed_cid = Some(ENCLAVE_CID);
+		let config = Config::new(8001, ENCLAVE_CID);
 		tokio::spawn(serve_with(listener, config, provider, move |event| {
 			sink.lock().unwrap().push(event);
 		}));
@@ -302,6 +301,24 @@ mod tests {
 				..
 			}
 		));
+	}
+
+	#[tokio::test]
+	async fn other_peers_get_nothing() {
+		let (queue, listener) = QueuedListener::new();
+		tokio::spawn(serve_with(
+			listener,
+			Config::new(8001, ENCLAVE_CID),
+			temporary(),
+			|_| {},
+		));
+
+		// CID 1 is a local process on the host, CID 2 the host itself.
+		for cid in [1, 2, ENCLAVE_CID + 1] {
+			let (mut peer, server) = connection();
+			queue.send(Ok((server, cid))).unwrap();
+			assert!(credentials_frame::read(&mut peer, "parent").await.is_err());
+		}
 	}
 
 	#[tokio::test]

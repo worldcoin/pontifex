@@ -164,8 +164,8 @@ The `kms` feature builds an AWS KMS client inside the enclave. TLS terminates in
 // Host
 use pontifex::credentials::{self, Config};
 
-let mut config = Config::new(CREDENTIALS_PORT);
-config.allowed_cid = Some(enclave_cid);
+// Only the enclave's CID is answered.
+let config = Config::new(CREDENTIALS_PORT, enclave_cid);
 credentials::serve(config, aws_config.credentials_provider().unwrap(), |event| { /* count `event` */ }).await?;
 
 // Enclave
