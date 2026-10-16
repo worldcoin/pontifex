@@ -422,7 +422,7 @@ mod tests {
 		let mut reply = Vec::new();
 		enclave.read_to_end(&mut reply).await.unwrap();
 
-		assert!(reply.is_empty());
+		assert_eq!(reply, Vec::<u8>::new());
 		assert!(matches!(
 			wait_for_close(&events).await,
 			Event::Closed {
@@ -443,7 +443,7 @@ mod tests {
 		let mut reply = Vec::new();
 		stranger.read_to_end(&mut reply).await.unwrap();
 
-		assert!(reply.is_empty());
+		assert_eq!(reply, Vec::<u8>::new());
 		assert_eq!(wait_for_close(&events).await, Event::RejectedPeer);
 	}
 
