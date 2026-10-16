@@ -92,8 +92,6 @@ where
 	// Step 2: Serialize and send the actual request data
 	let request_bytes = rmp_serde::to_vec(request).map_err(Error::Encoding)?;
 
-	tracing::debug!(payload =? request_bytes, "encoded request payload");
-
 	stream
 		.write_u64(request_bytes.len() as u64)
 		.await
@@ -106,7 +104,7 @@ where
 		.await
 		.map_err(|e| Error::Writing(CodingKey::Payload, e))?;
 
-	tracing::debug!(payload =? request_bytes, "sent encoded request payload");
+	tracing::debug!("sent encoded request payload");
 
 	let len = stream
 		.read_u64()
@@ -120,7 +118,7 @@ where
 		.await
 		.map_err(|e| Error::Reading(CodingKey::Payload, e))?;
 
-	tracing::debug!(payload =? response, "received encoded response payload");
+	tracing::debug!("received encoded response payload");
 
 	rmp_serde::from_slice(&response).map_err(Error::Decoding)
 }

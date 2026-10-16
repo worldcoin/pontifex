@@ -15,11 +15,8 @@ use {
 #[cfg(any(feature = "http", feature = "kms"))]
 pub mod http;
 
-#[cfg(any(feature = "proxy", feature = "credentials"))]
+#[cfg(feature = "proxy")]
 pub mod connections;
-
-#[cfg(any(feature = "kms", feature = "credentials"))]
-pub mod credentials_wire;
 
 /// The piece of data that was being read/written when an error occurred.
 #[derive(Debug)]

@@ -29,11 +29,12 @@ use hyper_util::{
 	},
 	rt::{TokioExecutor, TokioTimer},
 };
-use tokio_vsock::{VsockAddr, VsockStream};
+use tokio_vsock::VsockAddr;
 
-use crate::utils::{
-	credentials_wire,
-	http::{ConnectTimeout, VSockClientBuilder, vsock_proxy_http1},
+use crate::{
+	ConnectionDetails,
+	credentials::GetCredentials,
+	utils::http::{ConnectTimeout, VSockClientBuilder, vsock_proxy_http1},
 };
 
 /// The CID of the vsock proxy.
@@ -121,10 +122,10 @@ pub fn client_with_credentials(
 	aws_sdk_kms::Client::new(&builder)
 }
 
-/// Fetches the host's temporary credentials from its [`crate::credentials`] server.
+/// Fetches the host's temporary credentials with a [`GetCredentials`] request to the parent.
 ///
-/// Each fetch opens one vsock connection to the parent and reads one frame. Static or nearly
-/// expired credentials are rejected, so a client never signs with credentials it cannot renew.
+/// Static or nearly expired credentials are rejected, so a client never signs with credentials
+/// it cannot renew.
 #[derive(Debug, Clone, Copy)]
 pub struct ParentCredentials {
 	port: u32,
@@ -149,15 +150,14 @@ impl ParentCredentials {
 	}
 
 	async fn fetch(self) -> provider::Result {
-		let fetch = async {
-			let mut stream =
-				VsockStream::connect(VsockAddr::new(VSOCK_PROXY_CID, self.port)).await?;
-			credentials_wire::read(&mut stream, "pontifex-parent").await
-		};
+		let connection = ConnectionDetails::new(VSOCK_PROXY_CID, self.port);
 
-		match tokio::time::timeout(self.timeout, fetch).await {
-			Ok(Ok(credentials)) => Ok(credentials),
-			// The error names the failure class only; frames never put credential bytes in it.
+		match tokio::time::timeout(self.timeout, crate::send(connection, &GetCredentials)).await {
+			Ok(Ok(Ok(wire))) => wire
+				.into_credentials("pontifex-parent")
+				.map_err(CredentialsError::provider_error),
+			// Errors name the failure class only and never carry credential bytes.
+			Ok(Ok(Err(unavailable))) => Err(CredentialsError::provider_error(unavailable)),
 			Ok(Err(error)) => Err(CredentialsError::provider_error(error)),
 			Err(_) => Err(CredentialsError::provider_timed_out(self.timeout)),
 		}

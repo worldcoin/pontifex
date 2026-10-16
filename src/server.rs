@@ -175,6 +175,7 @@ where
 pub struct Router<S = ()> {
 	routes: HashMap<u32, Box<dyn Handler<S>>>, // Maps type IDs to their handlers
 	state: S,                                  // Shared application state
+	allowed_cid: Option<u32>,                  // Only peer accepted, if set
 }
 
 impl Router<()> {
@@ -196,6 +197,7 @@ impl Router<()> {
 		Self {
 			routes: HashMap::new(),
 			state: (),
+			allowed_cid: None,
 		}
 	}
 }
@@ -227,6 +229,7 @@ where
 		Self {
 			routes: HashMap::new(),
 			state,
+			allowed_cid: None,
 		}
 	}
 
@@ -277,6 +280,20 @@ where
 		self
 	}
 
+	/// Only accept connections from `cid`, dropping all others.
+	///
+	/// Use it whenever the router runs on the host: vsock is not namespaced, so other processes,
+	/// enclaves or pods on the same machine can otherwise reach it.
+	#[must_use]
+	pub const fn allowed_cid(mut self, cid: u32) -> Self {
+		self.allowed_cid = Some(cid);
+		self
+	}
+
+	fn admits(&self, cid: u32) -> bool {
+		self.allowed_cid.is_none_or(|allowed| allowed == cid)
+	}
+
 	/// Start serving requests on the specified port.
 	///
 	/// # Errors
@@ -301,7 +318,14 @@ where
 		let router = Arc::new(self);
 
 		loop {
-			let (stream, _) = listener.accept().await.map_err(Error::Accept)?;
+			let (stream, peer) = listener.accept().await.map_err(Error::Accept)?;
+			if !router.admits(peer.cid()) {
+				tracing::warn!(
+					cid = peer.cid(),
+					"rejected a connection from an unexpected peer"
+				);
+				continue;
+			}
 			let mut stream = Stream::new(stream);
 			let router = router.clone();
 
@@ -339,4 +363,20 @@ where
 	// 2. Call the user's handler function with typed parameters
 	// 3. Serialize and send the typed response
 	handler.handle(stream, router.state.clone()).await
+}
+
+#[cfg(test)]
+mod tests {
+	use super::Router;
+
+	#[test]
+	fn an_allowed_cid_admits_only_that_peer() {
+		assert!(Router::new().admits(17), "no restriction by default");
+
+		let router = Router::new().allowed_cid(16);
+		assert!(router.admits(16));
+		for stranger in [1, 2, 3, 17] {
+			assert!(!router.admits(stranger));
+		}
+	}
 }
