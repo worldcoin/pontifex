@@ -24,7 +24,7 @@ use tokio_vsock::{VsockAddr, VsockListener};
 
 use crate::utils::{
 	connections::{self, Accept, Limits, ListenerEvent},
-	credentials_wire::{self, FrameError},
+	credentials_wire::{self, WireError},
 };
 
 const VMADDR_CID_ANY: u32 = 0xFFFF_FFFF;
@@ -194,13 +194,13 @@ async fn send(
 
 	match credentials_wire::write(&mut stream, &credentials).await {
 		Ok(()) => Outcome::Sent,
-		Err(error) if frame_error(&error).is_some() => Outcome::NotTemporary,
+		Err(error) if wire_error(&error).is_some() => Outcome::NotTemporary,
 		Err(_) => Outcome::Io,
 	}
 }
 
-fn frame_error(error: &io::Error) -> Option<FrameError> {
-	error.get_ref()?.downcast_ref::<FrameError>().copied()
+fn wire_error(error: &io::Error) -> Option<WireError> {
+	error.get_ref()?.downcast_ref::<WireError>().copied()
 }
 
 #[cfg(test)]

@@ -21,7 +21,7 @@ pub const MIN_REMAINING_VALIDITY: Duration = Duration::from_secs(60);
 
 /// Why a frame was not sent or not accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum FrameError {
+pub enum WireError {
 	/// The length prefix is zero or above the frame cap.
 	#[error("credential frame length {0} is outside 1..={MAX_FRAME}")]
 	Length(usize),
@@ -42,8 +42,8 @@ pub enum FrameError {
 	FieldSize,
 }
 
-impl From<FrameError> for io::Error {
-	fn from(error: FrameError) -> Self {
+impl From<WireError> for io::Error {
+	fn from(error: WireError) -> Self {
 		Self::new(io::ErrorKind::InvalidData, error)
 	}
 }
@@ -66,22 +66,22 @@ impl Drop for WireCredentials {
 }
 
 impl WireCredentials {
-	fn validated_expiry(&self) -> Result<SystemTime, FrameError> {
+	fn validated_expiry(&self) -> Result<SystemTime, WireError> {
 		if self.version != VERSION {
-			return Err(FrameError::Version(self.version));
+			return Err(WireError::Version(self.version));
 		}
 		let sizes_valid = (1..=MAX_KEY_LEN).contains(&self.access_key_id.len())
 			&& (1..=MAX_KEY_LEN).contains(&self.secret_access_key.len())
 			&& (1..=MAX_TOKEN_LEN).contains(&self.session_token.len());
 		if !sizes_valid {
-			return Err(FrameError::FieldSize);
+			return Err(WireError::FieldSize);
 		}
 		let expiry = UNIX_EPOCH
 			.checked_add(Duration::from_secs(self.expires_at))
-			.ok_or(FrameError::Malformed)?;
+			.ok_or(WireError::Malformed)?;
 		let remaining = expiry.duration_since(SystemTime::now()).unwrap_or_default();
 		if remaining < MIN_REMAINING_VALIDITY {
-			return Err(FrameError::NearExpiry);
+			return Err(WireError::NearExpiry);
 		}
 
 		Ok(expiry)
@@ -92,7 +92,7 @@ impl WireCredentials {
 ///
 /// # Errors
 ///
-/// [`FrameError`] (as `InvalidData`) for credentials that are not temporary or expire too soon,
+/// [`WireError`] (as `InvalidData`) for credentials that are not temporary or expire too soon,
 /// and any I/O failure.
 #[cfg(any(feature = "credentials", test))]
 pub async fn write(
@@ -101,26 +101,26 @@ pub async fn write(
 ) -> io::Result<()> {
 	use tokio::io::AsyncWriteExt;
 
-	let expiry = credentials.expiry().ok_or(FrameError::NotTemporary)?;
+	let expiry = credentials.expiry().ok_or(WireError::NotTemporary)?;
 	let wire = WireCredentials {
 		version: VERSION,
 		access_key_id: credentials.access_key_id().to_owned(),
 		secret_access_key: credentials.secret_access_key().to_owned(),
 		session_token: credentials
 			.session_token()
-			.ok_or(FrameError::NotTemporary)?
+			.ok_or(WireError::NotTemporary)?
 			.to_owned(),
 		expires_at: expiry
 			.duration_since(UNIX_EPOCH)
-			.map_err(|_| FrameError::NearExpiry)?
+			.map_err(|_| WireError::NearExpiry)?
 			.as_secs(),
 	};
 	wire.validated_expiry()?;
-	let bytes = Zeroizing::new(rmp_serde::to_vec_named(&wire).map_err(|_| FrameError::Malformed)?);
+	let bytes = Zeroizing::new(rmp_serde::to_vec_named(&wire).map_err(|_| WireError::Malformed)?);
 	let length = u32::try_from(bytes.len())
 		.ok()
 		.filter(|&length| length as usize <= MAX_FRAME)
-		.ok_or(FrameError::Length(bytes.len()))?;
+		.ok_or(WireError::Length(bytes.len()))?;
 
 	stream.write_u32(length).await?;
 	stream.write_all(&bytes).await?;
@@ -131,7 +131,7 @@ pub async fn write(
 ///
 /// # Errors
 ///
-/// [`FrameError`] (as `InvalidData`) for an oversized, malformed, unsupported or expiring frame,
+/// [`WireError`] (as `InvalidData`) for an oversized, malformed, unsupported or expiring frame,
 /// and any I/O failure.
 #[cfg(any(feature = "kms", test))]
 pub async fn read(
@@ -142,11 +142,11 @@ pub async fn read(
 
 	let length = stream.read_u32().await? as usize;
 	if length == 0 || length > MAX_FRAME {
-		return Err(FrameError::Length(length).into());
+		return Err(WireError::Length(length).into());
 	}
 	let mut bytes = Zeroizing::new(vec![0; length]);
 	stream.read_exact(&mut bytes).await?;
-	let wire: WireCredentials = rmp_serde::from_slice(&bytes).map_err(|_| FrameError::Malformed)?;
+	let wire: WireCredentials = rmp_serde::from_slice(&bytes).map_err(|_| WireError::Malformed)?;
 	let expiry = wire.validated_expiry()?;
 
 	Ok(Credentials::new(
@@ -168,7 +168,7 @@ mod tests {
 	use aws_credential_types::Credentials;
 	use serde::Serialize;
 
-	use super::{FrameError, MAX_FRAME, VERSION, WireCredentials, read, write};
+	use super::{MAX_FRAME, VERSION, WireCredentials, WireError, read, write};
 
 	fn temporary(valid_for: Duration) -> Credentials {
 		Credentials::new(
@@ -180,8 +180,8 @@ mod tests {
 		)
 	}
 
-	fn frame_error(error: &io::Error) -> Option<FrameError> {
-		error.get_ref()?.downcast_ref::<FrameError>().copied()
+	fn wire_error(error: &io::Error) -> Option<WireError> {
+		error.get_ref()?.downcast_ref::<WireError>().copied()
 	}
 
 	async fn read_bytes(payload: &[u8]) -> io::Result<Credentials> {
@@ -241,16 +241,16 @@ mod tests {
 		);
 		let without_expiry = Credentials::new("id", "secret", Some("token".into()), None, "test");
 		let cases = [
-			(without_token, FrameError::NotTemporary),
-			(without_expiry, FrameError::NotTemporary),
-			(temporary(Duration::from_secs(30)), FrameError::NearExpiry),
+			(without_token, WireError::NotTemporary),
+			(without_expiry, WireError::NotTemporary),
+			(temporary(Duration::from_secs(30)), WireError::NearExpiry),
 		];
 
 		for (credentials, expected) in cases {
 			let error = write(&mut tokio::io::sink(), &credentials)
 				.await
 				.unwrap_err();
-			assert_eq!(frame_error(&error), Some(expected));
+			assert_eq!(wire_error(&error), Some(expected));
 		}
 	}
 
@@ -260,10 +260,7 @@ mod tests {
 			let error = read(&mut length.to_be_bytes().as_slice(), "test")
 				.await
 				.unwrap_err();
-			assert_eq!(
-				frame_error(&error),
-				Some(FrameError::Length(length as usize))
-			);
+			assert_eq!(wire_error(&error), Some(WireError::Length(length as usize)));
 		}
 	}
 
@@ -276,19 +273,19 @@ mod tests {
 		let mut far_future = wire_credentials(Duration::from_secs(3600));
 		far_future.expires_at = u64::MAX;
 		let cases = [
-			(b"sensitive-garbage".to_vec(), FrameError::Malformed),
-			(encoded(&wrong_version), FrameError::Version(2)),
-			(encoded(&empty_secret), FrameError::FieldSize),
+			(b"sensitive-garbage".to_vec(), WireError::Malformed),
+			(encoded(&wrong_version), WireError::Version(2)),
+			(encoded(&empty_secret), WireError::FieldSize),
 			(
 				encoded(&wire_credentials(Duration::from_secs(30))),
-				FrameError::NearExpiry,
+				WireError::NearExpiry,
 			),
-			(encoded(&far_future), FrameError::Malformed),
+			(encoded(&far_future), WireError::Malformed),
 		];
 
 		for (payload, expected) in cases {
 			let error = read_bytes(&payload).await.unwrap_err();
-			assert_eq!(frame_error(&error), Some(expected));
+			assert_eq!(wire_error(&error), Some(expected));
 			assert!(!format!("{error:?}").contains("sensitive"));
 			assert!(!format!("{error:?}").contains("secret"));
 		}
