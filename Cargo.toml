@@ -39,7 +39,7 @@ channel = [
 
 kms = [
     "_vsock-https",
-    "_credentials",
+    "_aws-credentials",
     "client",
     "dep:aws-types",
     "dep:aws-sdk-kms",
@@ -57,8 +57,8 @@ proxy = [
 ]
 
 # Host-side route serving temporary AWS credentials to the enclave's `kms` client.
-credentials = [
-    "_credentials",
+aws-credentials = [
+    "_aws-credentials",
     "server",
     "dep:aws-smithy-types",
     "tokio/time",
@@ -75,8 +75,8 @@ attestation = [
     "dep:ring",
 ]
 
-# Internal: The credentials route, shared by `kms` and `credentials`.
-_credentials = [
+# Internal: The credentials route, shared by `kms` and `aws-credentials`.
+_aws-credentials = [
     "dep:aws-credential-types",
     "dep:zeroize",
     "serde/derive",

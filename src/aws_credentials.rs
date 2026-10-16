@@ -1,15 +1,18 @@
 //! Temporary AWS credentials, served by the host to its enclave as a Pontifex route.
 //!
-//! The enclave has no credentials of its own. Its [`crate::kms`] client signs with the host's
-//! temporary workload credentials: `kms::ParentCredentials` sends [`GetCredentials`] to the host's
-//! `router` and the SDK asks again before they expire. Credentials authorize requests; they
+//! The enclave has no credentials of its own. Its AWS SDK clients, such as [`crate::kms`], sign
+//! with the host's temporary workload credentials: `ParentCredentials` sends [`GetCredentials`]
+//! to the host's `router`, and the SDK asks again before they expire. Credentials authorize requests; they
 //! cannot redirect them, and the host already holds them.
 //!
 //! ```rust,ignore
 //! // Host. Answers only `enclave_cid`: vsock is not namespaced, so other pods could ask too.
-//! credentials::router(provider, enclave_cid, |result| record_metric(result))
+//! aws_credentials::router(provider, enclave_cid, |result| record_metric(result))
 //!     .serve(CREDENTIALS_PORT)
 //!     .await?;
+//!
+//! // Enclave
+//! let client = kms::client_with_credentials(&sdk_config, ParentCredentials::new(CREDENTIALS_PORT), PROXY_PORT);
 //! ```
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -139,10 +142,77 @@ impl TryFrom<&Credentials> for WireCredentials {
 	}
 }
 
-#[cfg(feature = "credentials")]
+#[cfg(feature = "kms")]
+pub use enclave::ParentCredentials;
+
+#[cfg(feature = "kms")]
+mod enclave {
+	use std::time::Duration;
+
+	use aws_credential_types::provider::{
+		self, ProvideCredentials, error::CredentialsError, future,
+	};
+
+	use super::GetCredentials;
+	use crate::{ConnectionDetails, kms::VSOCK_PROXY_CID};
+
+	/// Fetches the host's temporary credentials with a [`GetCredentials`] request to the parent.
+	///
+	/// Static or nearly expired credentials are rejected, so a client never signs with credentials
+	/// it cannot renew.
+	#[derive(Debug, Clone, Copy)]
+	pub struct ParentCredentials {
+		port: u32,
+		timeout: Duration,
+	}
+
+	impl ParentCredentials {
+		/// Fetches from the parent's `port`, giving up after 3 seconds.
+		#[must_use]
+		pub const fn new(port: u32) -> Self {
+			Self {
+				port,
+				timeout: Duration::from_secs(3),
+			}
+		}
+
+		/// Bounds one fetch, connection included.
+		#[must_use]
+		pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+			self.timeout = timeout;
+			self
+		}
+
+		async fn fetch(self) -> provider::Result {
+			let connection = ConnectionDetails::new(VSOCK_PROXY_CID, self.port);
+
+			match tokio::time::timeout(self.timeout, crate::send(connection, &GetCredentials)).await
+			{
+				Ok(Ok(Ok(wire))) => wire
+					.into_credentials("pontifex-parent")
+					.map_err(CredentialsError::provider_error),
+				// Errors name the failure class only and never carry credential bytes.
+				Ok(Ok(Err(unavailable))) => Err(CredentialsError::provider_error(unavailable)),
+				Ok(Err(error)) => Err(CredentialsError::provider_error(error)),
+				Err(_) => Err(CredentialsError::provider_timed_out(self.timeout)),
+			}
+		}
+	}
+
+	impl ProvideCredentials for ParentCredentials {
+		fn provide_credentials<'a>(&'a self) -> future::ProvideCredentials<'a>
+		where
+			Self: 'a,
+		{
+			future::ProvideCredentials::new(self.fetch())
+		}
+	}
+}
+
+#[cfg(feature = "aws-credentials")]
 pub use host::{PROVIDER_TIMEOUT, router};
 
-#[cfg(feature = "credentials")]
+#[cfg(feature = "aws-credentials")]
 mod host {
 	use std::{sync::Arc, time::Duration};
 
@@ -222,7 +292,7 @@ mod host {
 		};
 
 		use super::{State, handle};
-		use crate::credentials::{CredentialsUnavailable, InvalidCredentials};
+		use crate::aws_credentials::{CredentialsUnavailable, InvalidCredentials};
 
 		type Seen = Vec<Result<(), CredentialsUnavailable>>;
 

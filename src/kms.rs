@@ -7,7 +7,7 @@ use std::{
 	time::Duration,
 };
 
-use aws_credential_types::provider::{self, ProvideCredentials, error::CredentialsError, future};
+use aws_credential_types::provider::ProvideCredentials;
 use aws_sdk_kms::config::SharedCredentialsProvider;
 use aws_smithy_runtime_api::client::{
 	connection::{CaptureSmithyConnection, ConnectionMetadata},
@@ -31,11 +31,7 @@ use hyper_util::{
 };
 use tokio_vsock::VsockAddr;
 
-use crate::{
-	ConnectionDetails,
-	credentials::GetCredentials,
-	utils::http::{ConnectTimeout, VSockClientBuilder, vsock_proxy_http1},
-};
+use crate::utils::http::{ConnectTimeout, VSockClientBuilder, vsock_proxy_http1};
 
 /// The CID of the vsock proxy.
 pub const VSOCK_PROXY_CID: u32 = 3;
@@ -71,7 +67,8 @@ impl Credentials {
 
 /// Creates a new KMS client with fixed credentials.
 ///
-/// Fixed credentials expire; prefer [`client_with_credentials`] with [`ParentCredentials`].
+/// Fixed credentials expire; prefer [`client_with_credentials`] with
+/// [`ParentCredentials`](crate::aws_credentials::ParentCredentials).
 ///
 /// # Timeouts
 ///
@@ -120,57 +117,6 @@ pub fn client_with_credentials(
 		.build();
 
 	aws_sdk_kms::Client::new(&builder)
-}
-
-/// Fetches the host's temporary credentials with a [`GetCredentials`] request to the parent.
-///
-/// Static or nearly expired credentials are rejected, so a client never signs with credentials
-/// it cannot renew.
-#[derive(Debug, Clone, Copy)]
-pub struct ParentCredentials {
-	port: u32,
-	timeout: Duration,
-}
-
-impl ParentCredentials {
-	/// Fetches from the parent's `port`, giving up after 3 seconds.
-	#[must_use]
-	pub const fn new(port: u32) -> Self {
-		Self {
-			port,
-			timeout: Duration::from_secs(3),
-		}
-	}
-
-	/// Bounds one fetch, connection included.
-	#[must_use]
-	pub const fn with_timeout(mut self, timeout: Duration) -> Self {
-		self.timeout = timeout;
-		self
-	}
-
-	async fn fetch(self) -> provider::Result {
-		let connection = ConnectionDetails::new(VSOCK_PROXY_CID, self.port);
-
-		match tokio::time::timeout(self.timeout, crate::send(connection, &GetCredentials)).await {
-			Ok(Ok(Ok(wire))) => wire
-				.into_credentials("pontifex-parent")
-				.map_err(CredentialsError::provider_error),
-			// Errors name the failure class only and never carry credential bytes.
-			Ok(Ok(Err(unavailable))) => Err(CredentialsError::provider_error(unavailable)),
-			Ok(Err(error)) => Err(CredentialsError::provider_error(error)),
-			Err(_) => Err(CredentialsError::provider_timed_out(self.timeout)),
-		}
-	}
-}
-
-impl ProvideCredentials for ParentCredentials {
-	fn provide_credentials<'a>(&'a self) -> future::ProvideCredentials<'a>
-	where
-		Self: 'a,
-	{
-		future::ProvideCredentials::new(self.fetch())
-	}
 }
 
 /// Fills in any timeout the caller left unset
