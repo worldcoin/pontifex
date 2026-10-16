@@ -98,6 +98,10 @@ pub mod kms;
 #[cfg(feature = "proxy")]
 pub mod proxy;
 
+/// Host-side delivery of temporary AWS credentials to the enclave.
+#[cfg(feature = "credentials")]
+pub mod credentials;
+
 /// HTTP-through-vsock
 #[cfg(feature = "http")]
 pub mod http;

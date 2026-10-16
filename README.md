@@ -156,6 +156,26 @@ proxy::serve(config, |event| match event {
 }).await?;
 ```
 
+### KMS From the Enclave
+
+The `kms` feature builds an AWS KMS client inside the enclave. TLS terminates in the enclave and the traffic leaves through the [outbound proxy](#outbound-proxy). The enclave has no AWS credentials of its own: with the `credentials` feature, the host serves its temporary workload credentials over vsock, and `kms::ParentCredentials` fetches and renews them.
+
+```rust,ignore
+// Host
+use pontifex::credentials::{self, Config};
+
+let mut config = Config::new(CREDENTIALS_PORT);
+config.allowed_cid = Some(enclave_cid);
+credentials::serve(config, aws_config.credentials_provider().unwrap(), |event| { /* count `event` */ }).await?;
+
+// Enclave
+use pontifex::kms::{self, ParentCredentials};
+
+let client = kms::client_with_credentials(&sdk_config, ParentCredentials::new(CREDENTIALS_PORT), PROXY_PORT);
+```
+
+Only temporary credentials with at least 60 seconds of validity are sent. Static credentials are refused on both sides.
+
 ## Releases
 
 Releases are automated with [release-plz](https://release-plz.dev)

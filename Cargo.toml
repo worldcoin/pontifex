@@ -39,6 +39,7 @@ channel = [
 
 kms = [
     "_vsock-https",
+    "_credentials-frame",
     "dep:aws-types",
     "dep:aws-sdk-kms",
     "dep:aws-smithy-types",
@@ -55,6 +56,17 @@ proxy = [
     "tokio/time",
 ]
 
+# Host-side delivery of temporary AWS credentials to the enclave's `kms` client.
+credentials = [
+    "_credentials-frame",
+    "dep:aws-smithy-types",
+    "dep:tokio-vsock",
+    "tokio/macros",
+    "tokio/rt",
+    "tokio/sync",
+    "tokio/time",
+]
+
 # Client-side verification of Nitro attestation documents.
 attestation = [
     "nsm-types",
@@ -64,6 +76,14 @@ attestation = [
     "dep:web-time",
     # Enables webpki's ring/getrandom backend on browser WASM.
     "dep:ring",
+]
+
+# Internal: The credential frame, shared by `kms` and `credentials`.
+_credentials-frame = [
+    "dep:aws-credential-types",
+    "dep:rmp-serde",
+    "dep:zeroize",
+    "serde/derive",
 ]
 
 # Internal: The HTTPS-over-vsock transport, shared by `http` and `kms`.
@@ -89,6 +109,7 @@ rmp-serde = { version = "1", optional = true }
 tokio-vsock = { version = "0.7", optional = true }
 tokio = { version = "1", features = ["io-util"] }
 aws-types = { version = "1", optional = true }
+aws-credential-types = { version = "1.2", optional = true }
 serde_bytes = { version = "0.11", optional = true }
 tower-service = { version = "0.3", optional = true }
 hyper = { version = "1", features = ["client"], optional = true }
@@ -136,6 +157,7 @@ hex-literal = "1"
 tokio-test = "0.4"
 tokio = { version = "1", features = ["macros", "rt", "test-util", "time"] }
 aws-smithy-runtime-api = { version = "1.9", features = ["client", "http-1x", "test-util"] }
+aws-credential-types = { version = "1.2", features = ["test-util"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.76"
