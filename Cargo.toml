@@ -39,7 +39,7 @@ channel = [
 
 kms = [
     "_vsock-https",
-    "_credentials-frame",
+    "_credentials-wire",
     "dep:aws-types",
     "dep:aws-sdk-kms",
     "dep:aws-smithy-types",
@@ -57,7 +57,7 @@ proxy = [
 
 # Host-side delivery of temporary AWS credentials to the enclave's `kms` client.
 credentials = [
-    "_credentials-frame",
+    "_credentials-wire",
     "dep:aws-smithy-types",
     "dep:futures-util",
     "dep:tokio-vsock",
@@ -76,7 +76,7 @@ attestation = [
 ]
 
 # Internal: The credential frame, shared by `kms` and `credentials`.
-_credentials-frame = [
+_credentials-wire = [
     "dep:aws-credential-types",
     "dep:rmp-serde",
     "dep:zeroize",

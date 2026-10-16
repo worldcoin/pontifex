@@ -32,7 +32,7 @@ use hyper_util::{
 use tokio_vsock::{VsockAddr, VsockStream};
 
 use crate::utils::{
-	credentials_frame,
+	credentials_wire,
 	http::{ConnectTimeout, VSockClientBuilder, vsock_proxy_http1},
 };
 
@@ -152,7 +152,7 @@ impl ParentCredentials {
 		let fetch = async {
 			let mut stream =
 				VsockStream::connect(VsockAddr::new(VSOCK_PROXY_CID, self.port)).await?;
-			credentials_frame::read(&mut stream, "pontifex-parent").await
+			credentials_wire::read(&mut stream, "pontifex-parent").await
 		};
 
 		match tokio::time::timeout(self.timeout, fetch).await {

@@ -49,7 +49,7 @@ impl From<FrameError> for io::Error {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Frame {
+struct WireCredentials {
 	version: u8,
 	access_key_id: String,
 	secret_access_key: String,
@@ -57,7 +57,7 @@ struct Frame {
 	expires_at: u64,
 }
 
-impl Drop for Frame {
+impl Drop for WireCredentials {
 	fn drop(&mut self) {
 		self.access_key_id.zeroize();
 		self.secret_access_key.zeroize();
@@ -65,7 +65,7 @@ impl Drop for Frame {
 	}
 }
 
-impl Frame {
+impl WireCredentials {
 	fn validated_expiry(&self) -> Result<SystemTime, FrameError> {
 		if self.version != VERSION {
 			return Err(FrameError::Version(self.version));
@@ -102,7 +102,7 @@ pub async fn write(
 	use tokio::io::AsyncWriteExt;
 
 	let expiry = credentials.expiry().ok_or(FrameError::NotTemporary)?;
-	let frame = Frame {
+	let wire = WireCredentials {
 		version: VERSION,
 		access_key_id: credentials.access_key_id().to_owned(),
 		secret_access_key: credentials.secret_access_key().to_owned(),
@@ -115,8 +115,8 @@ pub async fn write(
 			.map_err(|_| FrameError::NearExpiry)?
 			.as_secs(),
 	};
-	frame.validated_expiry()?;
-	let bytes = Zeroizing::new(rmp_serde::to_vec_named(&frame).map_err(|_| FrameError::Malformed)?);
+	wire.validated_expiry()?;
+	let bytes = Zeroizing::new(rmp_serde::to_vec_named(&wire).map_err(|_| FrameError::Malformed)?);
 	let length = u32::try_from(bytes.len())
 		.ok()
 		.filter(|&length| length as usize <= MAX_FRAME)
@@ -146,13 +146,13 @@ pub async fn read(
 	}
 	let mut bytes = Zeroizing::new(vec![0; length]);
 	stream.read_exact(&mut bytes).await?;
-	let frame: Frame = rmp_serde::from_slice(&bytes).map_err(|_| FrameError::Malformed)?;
-	let expiry = frame.validated_expiry()?;
+	let wire: WireCredentials = rmp_serde::from_slice(&bytes).map_err(|_| FrameError::Malformed)?;
+	let expiry = wire.validated_expiry()?;
 
 	Ok(Credentials::new(
-		&frame.access_key_id,
-		&frame.secret_access_key,
-		Some(frame.session_token.clone()),
+		&wire.access_key_id,
+		&wire.secret_access_key,
+		Some(wire.session_token.clone()),
 		Some(expiry),
 		provider_name,
 	))
@@ -168,7 +168,7 @@ mod tests {
 	use aws_credential_types::Credentials;
 	use serde::Serialize;
 
-	use super::{Frame, FrameError, MAX_FRAME, VERSION, read, write};
+	use super::{FrameError, MAX_FRAME, VERSION, WireCredentials, read, write};
 
 	fn temporary(valid_for: Duration) -> Credentials {
 		Credentials::new(
@@ -191,12 +191,12 @@ mod tests {
 		read(&mut framed.as_slice(), "test").await
 	}
 
-	fn encoded(frame: &impl Serialize) -> Vec<u8> {
-		rmp_serde::to_vec_named(frame).unwrap()
+	fn encoded(wire: &impl Serialize) -> Vec<u8> {
+		rmp_serde::to_vec_named(wire).unwrap()
 	}
 
-	fn frame(expires_in: Duration) -> Frame {
-		Frame {
+	fn wire_credentials(expires_in: Duration) -> WireCredentials {
+		WireCredentials {
 			version: VERSION,
 			access_key_id: "id".into(),
 			secret_access_key: "secret".into(),
@@ -269,18 +269,18 @@ mod tests {
 
 	#[tokio::test]
 	async fn invalid_frames_are_rejected_without_echoing_their_contents() {
-		let mut wrong_version = frame(Duration::from_secs(3600));
+		let mut wrong_version = wire_credentials(Duration::from_secs(3600));
 		wrong_version.version = 2;
-		let mut empty_secret = frame(Duration::from_secs(3600));
+		let mut empty_secret = wire_credentials(Duration::from_secs(3600));
 		empty_secret.secret_access_key.clear();
-		let mut far_future = frame(Duration::from_secs(3600));
+		let mut far_future = wire_credentials(Duration::from_secs(3600));
 		far_future.expires_at = u64::MAX;
 		let cases = [
 			(b"sensitive-garbage".to_vec(), FrameError::Malformed),
 			(encoded(&wrong_version), FrameError::Version(2)),
 			(encoded(&empty_secret), FrameError::FieldSize),
 			(
-				encoded(&frame(Duration::from_secs(30))),
+				encoded(&wire_credentials(Duration::from_secs(30))),
 				FrameError::NearExpiry,
 			),
 			(encoded(&far_future), FrameError::Malformed),

@@ -24,7 +24,7 @@ use tokio_vsock::{VsockAddr, VsockListener};
 
 use crate::utils::{
 	connections::{self, Accept, Limits, ListenerEvent},
-	credentials_frame::{self, FrameError},
+	credentials_wire::{self, FrameError},
 };
 
 const VMADDR_CID_ANY: u32 = 0xFFFF_FFFF;
@@ -192,7 +192,7 @@ async fn send(
 		},
 	};
 
-	match credentials_frame::write(&mut stream, &credentials).await {
+	match credentials_wire::write(&mut stream, &credentials).await {
 		Ok(()) => Outcome::Sent,
 		Err(error) if frame_error(&error).is_some() => Outcome::NotTemporary,
 		Err(_) => Outcome::Io,
@@ -220,7 +220,7 @@ mod tests {
 	use super::{Config, Event, Outcome, serve_with};
 	use crate::utils::{
 		connections::test_support::{QueuedListener, connection},
-		credentials_frame,
+		credentials_wire,
 	};
 
 	const ENCLAVE_CID: u32 = 16;
@@ -271,7 +271,7 @@ mod tests {
 
 		let (mut enclave, server) = connection();
 		queue.send(Ok((server, ENCLAVE_CID))).unwrap();
-		let received = credentials_frame::read(&mut enclave, "parent").await.ok();
+		let received = credentials_wire::read(&mut enclave, "parent").await.ok();
 		loop {
 			let last = events.lock().unwrap().last().copied();
 			if let Some(event) = last {
@@ -309,7 +309,7 @@ mod tests {
 		for cid in [1, 2, ENCLAVE_CID + 1] {
 			let (mut peer, server) = connection();
 			queue.send(Ok((server, cid))).unwrap();
-			assert!(credentials_frame::read(&mut peer, "parent").await.is_err());
+			assert!(credentials_wire::read(&mut peer, "parent").await.is_err());
 		}
 	}
 
