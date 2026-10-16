@@ -2,6 +2,8 @@
 //!
 //! One frame per connection: a big-endian `u32` length, then a `MessagePack` map. The length is
 //! capped before anything is allocated. Errors never carry credential bytes.
+//!
+//! No version field: add optional fields with `#[serde(default)]`; breaking changes get a new port.
 
 use std::{
 	io,
@@ -12,7 +14,6 @@ use aws_credential_types::Credentials;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
-const VERSION: u8 = 1;
 const MAX_FRAME: usize = 16 * 1024;
 const MAX_KEY_LEN: usize = 128;
 const MAX_TOKEN_LEN: usize = 12 * 1024;
@@ -28,9 +29,6 @@ pub enum WireError {
 	/// The frame does not decode.
 	#[error("credential frame is malformed")]
 	Malformed,
-	/// The frame was written by an incompatible version.
-	#[error("unsupported credential frame version {0}")]
-	Version(u8),
 	/// The credentials have no session token or no expiry, so they are not temporary.
 	#[error("credentials are not temporary")]
 	NotTemporary,
@@ -50,7 +48,6 @@ impl From<WireError> for io::Error {
 
 #[derive(Serialize, Deserialize)]
 struct WireCredentials {
-	version: u8,
 	access_key_id: String,
 	secret_access_key: String,
 	session_token: String,
@@ -67,9 +64,6 @@ impl Drop for WireCredentials {
 
 impl WireCredentials {
 	fn validated_expiry(&self) -> Result<SystemTime, WireError> {
-		if self.version != VERSION {
-			return Err(WireError::Version(self.version));
-		}
 		let sizes_valid = (1..=MAX_KEY_LEN).contains(&self.access_key_id.len())
 			&& (1..=MAX_KEY_LEN).contains(&self.secret_access_key.len())
 			&& (1..=MAX_TOKEN_LEN).contains(&self.session_token.len());
@@ -103,7 +97,6 @@ pub async fn write(
 
 	let expiry = credentials.expiry().ok_or(WireError::NotTemporary)?;
 	let wire = WireCredentials {
-		version: VERSION,
 		access_key_id: credentials.access_key_id().to_owned(),
 		secret_access_key: credentials.secret_access_key().to_owned(),
 		session_token: credentials
@@ -131,7 +124,7 @@ pub async fn write(
 ///
 /// # Errors
 ///
-/// [`WireError`] (as `InvalidData`) for an oversized, malformed, unsupported or expiring frame,
+/// [`WireError`] (as `InvalidData`) for an oversized, malformed or expiring frame,
 /// and any I/O failure.
 #[cfg(any(feature = "kms", test))]
 pub async fn read(
@@ -168,7 +161,7 @@ mod tests {
 	use aws_credential_types::Credentials;
 	use serde::Serialize;
 
-	use super::{MAX_FRAME, VERSION, WireCredentials, WireError, read, write};
+	use super::{MAX_FRAME, WireCredentials, WireError, read, write};
 
 	fn temporary(valid_for: Duration) -> Credentials {
 		Credentials::new(
@@ -197,7 +190,6 @@ mod tests {
 
 	fn wire_credentials(expires_in: Duration) -> WireCredentials {
 		WireCredentials {
-			version: VERSION,
 			access_key_id: "id".into(),
 			secret_access_key: "secret".into(),
 			session_token: "token".into(),
@@ -266,15 +258,12 @@ mod tests {
 
 	#[tokio::test]
 	async fn invalid_frames_are_rejected_without_echoing_their_contents() {
-		let mut wrong_version = wire_credentials(Duration::from_secs(3600));
-		wrong_version.version = 2;
 		let mut empty_secret = wire_credentials(Duration::from_secs(3600));
 		empty_secret.secret_access_key.clear();
 		let mut far_future = wire_credentials(Duration::from_secs(3600));
 		far_future.expires_at = u64::MAX;
 		let cases = [
 			(b"sensitive-garbage".to_vec(), WireError::Malformed),
-			(encoded(&wrong_version), WireError::Version(2)),
 			(encoded(&empty_secret), WireError::FieldSize),
 			(
 				encoded(&wire_credentials(Duration::from_secs(30))),
