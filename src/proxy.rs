@@ -16,7 +16,7 @@
 use std::{
 	convert::Infallible,
 	pin::Pin,
-	sync::{Arc, Mutex, PoisonError},
+	sync::{Mutex, PoisonError},
 	task::{Context, Poll},
 	time::Duration,
 };
@@ -24,7 +24,6 @@ use std::{
 use tokio::{
 	io::{AsyncRead, AsyncWrite, ReadBuf},
 	net::TcpStream,
-	sync::Semaphore,
 	time::Instant,
 };
 use tokio_vsock::{VsockAddr, VsockListener};
@@ -45,7 +44,7 @@ pub struct Config {
 	pub destination_port: u16,
 	/// Only this CID may connect. `None` admits any peer.
 	pub allowed_cid: Option<u32>,
-	/// Connections served at once; further ones are dropped and reported.
+	/// Connections served at once; further ones wait in the kernel's accept queue.
 	pub max_connections: usize,
 	/// Bounds resolving and connecting to the destination.
 	pub connect_timeout: Duration,
@@ -93,8 +92,6 @@ pub enum Error {
 pub enum Event {
 	/// The peer was not [`Config::allowed_cid`]; the connection was dropped.
 	RejectedPeer,
-	/// All [`Config::max_connections`] slots were in use; the connection was dropped.
-	RejectedCapacity,
 	/// Accepting a connection failed; the proxy keeps serving.
 	AcceptFailed,
 	/// A forwarded connection ended.
@@ -126,7 +123,6 @@ impl From<ListenerEvent> for Event {
 	fn from(event: ListenerEvent) -> Self {
 		match event {
 			ListenerEvent::RejectedPeer => Self::RejectedPeer,
-			ListenerEvent::RejectedCapacity => Self::RejectedCapacity,
 			ListenerEvent::AcceptFailed => Self::AcceptFailed,
 		}
 	}
@@ -163,10 +159,8 @@ const fn validate(config: &Config) -> Result<(), Error> {
 	if config.destination_port == 0 {
 		return Err(Error::InvalidConfig("destination port is 0"));
 	}
-	if config.max_connections == 0 || config.max_connections > Semaphore::MAX_PERMITS {
-		return Err(Error::InvalidConfig(
-			"max_connections must be between 1 and Semaphore::MAX_PERMITS",
-		));
+	if config.max_connections == 0 {
+		return Err(Error::InvalidConfig("max_connections is 0"));
 	}
 
 	Ok(())
@@ -186,32 +180,26 @@ where
 		allowed_cid: config.allowed_cid,
 		max_connections: config.max_connections,
 	};
-	let config = Arc::new(config);
-	let on_event = Arc::new(on_event);
-	let on_listener_event = Arc::clone(&on_event);
+	let (config, on_event) = (&config, &on_event);
 
 	connections::serve(
 		listener,
 		limits,
-		move |event| on_listener_event(event.into()),
-		move |stream| {
-			let config = Arc::clone(&config);
-			let on_event = Arc::clone(&on_event);
-			async move {
-				let started = Instant::now();
-				let outcome = forward(stream, &config).await;
-				if outcome != Outcome::Completed {
-					tracing::warn!(
-						?outcome,
-						destination = %config.destination_host,
-						"proxied connection failed"
-					);
-				}
-				on_event(Event::Closed {
-					outcome,
-					duration: started.elapsed(),
-				});
+		|event| on_event(event.into()),
+		|stream| async move {
+			let started = Instant::now();
+			let outcome = forward(stream, config).await;
+			if outcome != Outcome::Completed {
+				tracing::warn!(
+					?outcome,
+					destination = %config.destination_host,
+					"proxied connection failed"
+				);
 			}
+			on_event(Event::Closed {
+				outcome,
+				duration: started.elapsed(),
+			});
 		},
 	)
 	.await
@@ -484,14 +472,11 @@ mod tests {
 	fn configurations_that_cannot_serve_are_rejected() {
 		let mut no_slots = Config::new(8000, "kms.eu-central-1.amazonaws.com", 443);
 		no_slots.max_connections = 0;
-		let mut unbounded = Config::new(8000, "kms.eu-central-1.amazonaws.com", 443);
-		unbounded.max_connections = usize::MAX;
 
 		for config in [
 			Config::new(8000, "", 443),
 			Config::new(8000, "kms.eu-central-1.amazonaws.com", 0),
 			no_slots,
-			unbounded,
 		] {
 			assert!(matches!(validate(&config), Err(Error::InvalidConfig(_))));
 		}

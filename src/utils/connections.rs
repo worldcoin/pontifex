@@ -1,8 +1,8 @@
 //! A bounded accept loop for host-side vsock listeners.
 
-use std::{convert::Infallible, future::Future, io, sync::Arc, time::Duration};
+use std::{convert::Infallible, future::Future, io, time::Duration};
 
-use tokio::{sync::Semaphore, task::JoinSet};
+use futures_util::{StreamExt, stream};
 use tokio_vsock::{VsockListener, VsockStream};
 
 /// Pause after a failed accept, so a persistent failure (e.g. `EMFILE`) cannot spin the loop.
@@ -13,8 +13,6 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 pub enum ListenerEvent {
 	/// The peer's CID was not the allowed one.
 	RejectedPeer,
-	/// All connection slots were in use.
-	RejectedCapacity,
 	/// Accepting a connection failed; the loop keeps serving.
 	AcceptFailed,
 }
@@ -23,6 +21,7 @@ pub enum ListenerEvent {
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
 	pub allowed_cid: Option<u32>,
+	/// Must be at least 1; `for_each_concurrent` treats 0 as unbounded.
 	pub max_connections: usize,
 }
 
@@ -43,58 +42,51 @@ impl Accept for VsockListener {
 	}
 }
 
-/// Hands admitted connections to `handle` until dropped.
+/// Hands admitted connections to `handle`, at most `max_connections` at once, until dropped.
 ///
-/// A slot frees as soon as its handler finishes. A panicking handler is re-raised here.
+/// At capacity it stops accepting, so further connections wait in the kernel's accept queue.
+/// Handlers run on this future, so dropping it closes every connection and a panic propagates.
 pub async fn serve<A, H, Fut>(
-	mut listener: A,
+	listener: A,
 	limits: Limits,
-	on_event: impl Fn(ListenerEvent),
+	on_event: impl Fn(ListenerEvent) + Sync,
 	handle: H,
 ) -> Infallible
 where
 	A: Accept,
-	H: Fn(A::Stream) -> Fut,
-	Fut: Future<Output = ()> + Send + 'static,
+	H: FnMut(A::Stream) -> Fut + Send,
+	Fut: Future<Output = ()> + Send,
 {
-	let slots = Arc::new(Semaphore::new(limits.max_connections));
-	let mut workers = JoinSet::new();
-
-	loop {
-		tokio::select! {
-			accepted = listener.accept() => match accepted {
-				Ok((stream, cid)) => {
-					if limits.allowed_cid.is_some_and(|allowed| allowed != cid) {
-						tracing::warn!(cid, "rejected a vsock connection from an unexpected peer");
-						on_event(ListenerEvent::RejectedPeer);
-						continue;
-					}
-					let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
-						tracing::warn!(cid, "rejected a vsock connection: all slots are in use");
-						on_event(ListenerEvent::RejectedCapacity);
-						continue;
-					};
-					let worker = handle(stream);
-					workers.spawn(async move {
-						worker.await;
-						drop(slot);
-					});
-				},
-				Err(error) => {
-					tracing::warn!(%error, "failed to accept a vsock connection");
-					on_event(ListenerEvent::AcceptFailed);
-					tokio::time::sleep(ACCEPT_BACKOFF).await;
-				},
+	let on_event = &on_event;
+	let accepted = stream::unfold(listener, |mut listener| async move {
+		let accepted = listener.accept().await;
+		Some((accepted, listener))
+	});
+	let admitted = accepted.filter_map(|accepted| async move {
+		match accepted {
+			Ok((stream, cid)) if limits.allowed_cid.is_none_or(|allowed| allowed == cid) => {
+				Some(stream)
 			},
-			Some(finished) = workers.join_next(), if !workers.is_empty() => {
-				match finished {
-					Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-					// Workers are only cancelled when this loop is dropped.
-					Ok(()) | Err(_) => {},
-				}
+			Ok((_, cid)) => {
+				tracing::warn!(cid, "rejected a vsock connection from an unexpected peer");
+				on_event(ListenerEvent::RejectedPeer);
+				None
+			},
+			Err(error) => {
+				tracing::warn!(%error, "failed to accept a vsock connection");
+				on_event(ListenerEvent::AcceptFailed);
+				tokio::time::sleep(ACCEPT_BACKOFF).await;
+				None
 			},
 		}
-	}
+	});
+
+	admitted
+		.for_each_concurrent(limits.max_connections, handle)
+		.await;
+
+	// The accept stream never ends.
+	std::future::pending().await
 }
 
 #[cfg(test)]
@@ -171,12 +163,6 @@ mod tests {
 		}
 	}
 
-	/// Waits for the handler to drop its end; on a current-thread runtime its slot is free by then.
-	async fn closed(peer: &mut tokio::io::DuplexStream) {
-		let mut rest = Vec::new();
-		_ = peer.read_to_end(&mut rest).await;
-	}
-
 	async fn admitted(peer: &mut tokio::io::DuplexStream) -> bool {
 		_ = peer.write_all(&[7]).await;
 		let mut byte = [0];
@@ -201,19 +187,23 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn a_slot_frees_when_its_handler_finishes() {
+	async fn at_capacity_a_connection_waits_for_a_free_slot() {
 		let (queue, listener) = QueuedListener::new();
-		let (events, on_event) = recorder();
 		let release = Arc::new(Notify::new());
 		let handler_release = Arc::clone(&release);
 		tokio::spawn(async move {
-			serve(listener, LIMITS, on_event, move |stream| {
-				let release = Arc::clone(&handler_release);
-				async move {
-					release.notified().await;
-					echo(stream).await;
-				}
-			})
+			serve(
+				listener,
+				LIMITS,
+				|_| {},
+				move |stream| {
+					let release = Arc::clone(&handler_release);
+					async move {
+						release.notified().await;
+						echo(stream).await;
+					}
+				},
+			)
 			.await
 		});
 
@@ -221,20 +211,16 @@ mod tests {
 		queue.send(Ok((server, 16))).unwrap();
 		let (mut second, server) = connection();
 		queue.send(Ok((server, 16))).unwrap();
-		assert!(!admitted(&mut second).await, "the only slot is taken");
+		let waiting = tokio::time::timeout(Duration::from_millis(50), admitted(&mut second)).await;
+		assert!(waiting.is_err(), "the only slot is taken");
 
 		release.notify_one();
 		assert!(admitted(&mut first).await);
-		closed(&mut first).await;
-
-		let (mut third, server) = connection();
-		queue.send(Ok((server, 16))).unwrap();
 		release.notify_one();
 		assert!(
-			admitted(&mut third).await,
+			admitted(&mut second).await,
 			"the finished handler freed its slot"
 		);
-		assert_eq!(*events.lock().unwrap(), [ListenerEvent::RejectedCapacity]);
 	}
 
 	#[tokio::test(start_paused = true)]
