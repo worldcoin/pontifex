@@ -13,7 +13,7 @@
 //! credentials::serve(config, aws_config.credentials_provider().unwrap(), |event| record_metric(event)).await?;
 //! ```
 
-use std::{convert::Infallible, io, sync::Arc, time::Duration};
+use std::{convert::Infallible, io, time::Duration};
 
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 use tokio::{
@@ -38,7 +38,7 @@ pub struct Config {
 	/// The only CID that may connect. Required: vsock is not namespaced, so other processes or
 	/// pods on the node could otherwise read the host's credentials.
 	pub allowed_cid: u32,
-	/// Exchanges served at once; further connections are dropped and reported.
+	/// Exchanges served at once; further connections wait in the kernel's accept queue.
 	pub max_connections: usize,
 	/// Bounds one exchange, including a provider refresh.
 	pub timeout: Duration,
@@ -79,8 +79,6 @@ pub enum Error {
 pub enum Event {
 	/// The peer was not [`Config::allowed_cid`]; the connection was dropped.
 	RejectedPeer,
-	/// All [`Config::max_connections`] slots were in use; the connection was dropped.
-	RejectedCapacity,
 	/// Accepting a connection failed; the server keeps serving.
 	AcceptFailed,
 	/// An exchange ended.
@@ -112,7 +110,6 @@ impl From<ListenerEvent> for Event {
 	fn from(event: ListenerEvent) -> Self {
 		match event {
 			ListenerEvent::RejectedPeer => Self::RejectedPeer,
-			ListenerEvent::RejectedCapacity => Self::RejectedCapacity,
 			ListenerEvent::AcceptFailed => Self::AcceptFailed,
 		}
 	}
@@ -131,10 +128,8 @@ pub async fn serve(
 	provider: SharedCredentialsProvider,
 	on_event: impl Fn(Event) + Send + Sync + 'static,
 ) -> Result<Infallible, Error> {
-	if config.max_connections == 0 || config.max_connections > tokio::sync::Semaphore::MAX_PERMITS {
-		return Err(Error::InvalidConfig(
-			"max_connections must be between 1 and Semaphore::MAX_PERMITS",
-		));
+	if config.max_connections == 0 {
+		return Err(Error::InvalidConfig("max_connections is 0"));
 	}
 	let listener =
 		VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, config.port)).map_err(|source| {
@@ -162,30 +157,24 @@ where
 		allowed_cid: Some(config.allowed_cid),
 		max_connections: config.max_connections,
 	};
-	let timeout = config.timeout;
-	let on_event = Arc::new(on_event);
-	let on_listener_event = Arc::clone(&on_event);
+	let (timeout, provider, on_event) = (config.timeout, &provider, &on_event);
 
 	connections::serve(
 		listener,
 		limits,
-		move |event| on_listener_event(event.into()),
-		move |stream| {
-			let provider = provider.clone();
-			let on_event = Arc::clone(&on_event);
-			async move {
-				let started = Instant::now();
-				let outcome = tokio::time::timeout(timeout, send(stream, &provider))
-					.await
-					.unwrap_or(Outcome::TimedOut);
-				if outcome != Outcome::Sent {
-					tracing::warn!(?outcome, "failed to send credentials to the enclave");
-				}
-				on_event(Event::Served {
-					outcome,
-					duration: started.elapsed(),
-				});
+		|event| on_event(event.into()),
+		|stream| async move {
+			let started = Instant::now();
+			let outcome = tokio::time::timeout(timeout, send(stream, provider))
+				.await
+				.unwrap_or(Outcome::TimedOut);
+			if outcome != Outcome::Sent {
+				tracing::warn!(?outcome, "failed to send credentials to the enclave");
 			}
+			on_event(Event::Served {
+				outcome,
+				duration: started.elapsed(),
+			});
 		},
 	)
 	.await
