@@ -147,6 +147,7 @@ pub async fn serve(
 	Ok(serve_with(listener, config, provider, on_event).await)
 }
 
+/// [`serve`] over any [`Accept`] source, so tests can run without vsock.
 async fn serve_with<A>(
 	listener: A,
 	config: Config,
