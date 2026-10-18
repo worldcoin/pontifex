@@ -79,10 +79,22 @@ pub enum ChannelError {
 /// The protocol name bound into every seal on a channel.
 ///
 /// A client and enclave that disagree on the name fail closed instead of exchanging plaintext.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ChannelDomain {
 	name: &'static str,
 	key_commitment_domain: &'static [u8],
+}
+
+impl std::fmt::Debug for ChannelDomain {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("ChannelDomain")
+			.field("name", &self.name)
+			.field(
+				"key_commitment_domain",
+				&format_args!("b\"{}\"", self.key_commitment_domain.escape_ascii()),
+			)
+			.finish()
+	}
 }
 
 impl ChannelDomain {
@@ -818,14 +830,14 @@ mod tests {
 
 		assert_eq!(
 			format!("{consumer:?}"),
-			r#"ChannelConsumer { domain: ChannelDomain { name: "pontifex/test", key_commitment_domain: [112, 111, 110, 116, 105, 102, 101, 120, 47, 112, 117, 98, 108, 105, 99, 45, 107, 101, 121, 45, 99, 111, 109, 109, 105, 116, 109, 101, 110, 116, 47, 118, 49, 0] }, .. }"#
+			r#"ChannelConsumer { domain: ChannelDomain { name: "pontifex/test", key_commitment_domain: b"pontifex/public-key-commitment/v1\x00" }, .. }"#
 		);
 		assert_eq!(format!("{sealer:?}"), "ResponseSealer { .. }");
 
 		let (_, opener) = seal(&consumer, b"inputs");
 		assert_eq!(
 			format!("{opener:?}"),
-			r#"ResponseOpener { domain: ChannelDomain { name: "pontifex/test" }, .. }"#
+			r#"ResponseOpener { domain: ChannelDomain { name: "pontifex/test", key_commitment_domain: b"pontifex/public-key-commitment/v1\x00" }, .. }"#
 		);
 	}
 
