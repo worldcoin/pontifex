@@ -129,7 +129,7 @@ let (consumer, attestation) =
     ChannelConsumer::from_attestation(DOMAIN, &verifier, &attestation_doc, &enclave_public_key)?;
 let (sealed_request, opener) = consumer.seal_to_enclave(b"inputs")?;
 
-// Enclave: open the request, seal the one reply it belongs to.
+// Enclave: open the request, seal a reply; the sealer and opener can be reused for more replies.
 let (plaintext, sealer) = enclave.open(&sealed_request)?;
 let sealed_response = sealer.seal(b"result")?;
 

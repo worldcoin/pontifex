@@ -18,6 +18,8 @@
 //!   the same ciphertext multiple times). Add a separate mechanism if your trust assumptions require this.
 //! 5. The enclave attests the key commitment in the document's `public_key` field, `user_data` and `nonce`
 //!   can be used to carry additional data.
+//! 6. A [`ResponseSealer`] can seal several responses to one request. The channel does not order them
+//!   or detect replay, reordering or truncation; add sequence numbers in the application if needed.
 
 use quantum_box::{PublicKey, SecretKey};
 use sha2::{Digest as _, Sha256};
@@ -190,7 +192,7 @@ impl ChannelEnclave {
 		self.domain.public_key_commitment(&self.public_key())
 	}
 
-	/// Opens a sealed request, returning the plaintext and the sealer for its one response.
+	/// Opens a sealed request, returning the plaintext and the sealer for its responses.
 	///
 	/// # Errors
 	///
@@ -229,7 +231,7 @@ pub fn public_key_commitment(public_key: &[u8]) -> [u8; 32] {
 	ChannelDomain::new("").public_key_commitment(public_key)
 }
 
-/// Seals a one-time response back to the consumer.
+/// Seals responses back to the consumer of one request.
 ///
 /// # Important
 /// The sealed response is **NOT** attested by the enclave, and anyone could generate
@@ -252,7 +254,7 @@ impl ResponseSealer {
 	/// # Errors
 	///
 	/// Fails if the operating system CSPRNG is unavailable, or sealing unexpectedly fails.
-	pub fn seal(self, plaintext: &[u8]) -> Result<Vec<u8>, ChannelError> {
+	pub fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, ChannelError> {
 		Ok(PublicKey::seal(
 			&self.response_key,
 			plaintext,
@@ -331,7 +333,7 @@ impl ChannelConsumer {
 		})
 	}
 
-	/// Seals one request, returning the ciphertext bytes and the opener for its one response.
+	/// Seals one request, returning the ciphertext bytes and the opener for its responses.
 	///
 	/// # Errors
 	///
@@ -373,24 +375,11 @@ fn generate_seed() -> Result<Seed, ChannelError> {
 	Ok(seed)
 }
 
-/// Opens the response from the enclave after a [`ChannelConsumer::seal_to_enclave`] call. One-time use.
+/// Opens the responses from the enclave after a [`ChannelConsumer::seal_to_enclave`] call.
 ///
 /// A consumer that may not stay alive until the response arrives (e.g. a mobile app that can be
 /// killed) can persist it with [`Self::to_secret_bytes`] and restore it with
 /// [`Self::from_secret_bytes`].
-///
-/// ```compile_fail,E0382
-/// # use pontifex::channel::{ChannelConsumer, ChannelDomain, ChannelEnclave};
-/// # const DOMAIN: ChannelDomain = ChannelDomain::new("pontifex/doc");
-/// # let enclave = ChannelEnclave::generate(DOMAIN)?;
-/// # let consumer = ChannelConsumer::from_unverified_public_key(DOMAIN, &enclave.public_key())?;
-/// # let (request, opener) = consumer.seal_to_enclave(b"inputs")?;
-/// # let (_, sealer) = enclave.open(&request)?;
-/// # let response = sealer.seal(b"result")?;
-/// opener.open_from_enclave(&response)?;
-/// opener.open_from_enclave(&response)?; // the opener was consumed above
-/// # Ok::<(), pontifex::ChannelError>(())
-/// ```
 pub struct ResponseOpener {
 	domain: ChannelDomain,
 	/// Seed of the response key, which is derived from it only when the response is opened.
@@ -411,7 +400,7 @@ impl ResponseOpener {
 	/// # Important
 	/// The bytes are the response key's secret. Anyone holding them can read the response, so store
 	/// them only in secure, device-bound storage (e.g. Keychain or Keystore) and delete them once
-	/// the response is opened. The domain is not included; supply it again to
+	/// the last response is opened. The domain is not included; supply it again to
 	/// [`Self::from_secret_bytes`].
 	#[must_use]
 	pub fn to_secret_bytes(&self) -> Zeroizing<Vec<u8>> {
@@ -441,13 +430,12 @@ impl ResponseOpener {
 		})
 	}
 
-	/// Opens the response to this request. Key is zeroized after use.
+	/// Opens a response to this request.
 	///
 	/// # Errors
 	///
-	/// Fails if the response was not sealed to this request under this domain. Retry by sealing
-	/// a fresh request; the key for these bytes is gone.
-	pub fn open_from_enclave(self, response: &[u8]) -> Result<Zeroizing<Vec<u8>>, ChannelError> {
+	/// Fails if the response was not sealed to this request under this domain.
+	pub fn open_from_enclave(&self, response: &[u8]) -> Result<Zeroizing<Vec<u8>>, ChannelError> {
 		Ok(Zeroizing::new(SecretKey::unseal(
 			&SecretKey::from_seed(&self.seed),
 			response,
@@ -529,6 +517,24 @@ mod tests {
 				.as_slice(),
 			b"result"
 		);
+	}
+
+	#[test]
+	fn one_request_carries_several_responses() {
+		let enclave = enclave();
+		let (request, opener) = seal(&consumer_for(&enclave, TEST_DOMAIN), b"inputs");
+		let (_, sealer) = enclave.open(&request).expect("open");
+
+		for message in [b"first".as_ref(), b"second", b""] {
+			let response = sealer.seal(message).expect("seal response");
+			assert_eq!(
+				opener
+					.open_from_enclave(&response)
+					.expect("open response")
+					.as_slice(),
+				message
+			);
+		}
 	}
 
 	#[test]
