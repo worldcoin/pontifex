@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0](https://github.com/worldcoin/pontifex/compare/3.1.0...3.2.0) - 2026-11-01
+
+### Added
+
+- allow reusing ResponseSealer and ResponseOpener ([#66](https://github.com/worldcoin/pontifex/pull/66))
+
+### Other
+
+- *(deps)* bump taiki-e/install-action from 2.87.14 to 2.87.29 ([#69](https://github.com/worldcoin/pontifex/pull/69))
+- *(deps)* bump release-plz/action from 0.5.138 to 0.5.142 ([#70](https://github.com/worldcoin/pontifex/pull/70))
+
 ## [3.1.0](https://github.com/worldcoin/pontifex/compare/3.0.0...3.1.0) - 2026-10-19
 
 ### Added
