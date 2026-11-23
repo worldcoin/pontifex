@@ -71,7 +71,7 @@ jobs:
                   CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
               run: |
                   rustup target add wasm32-unknown-unknown
-                  cargo install wasm-bindgen-cli --version 0.2.126 --locked
+                  cargo install wasm-bindgen-cli --version 0.2.129 --locked
                   CHROMEDRIVER="$CHROMEWEBDRIVER/chromedriver" cargo test \
                     --no-default-features --features channel,attestation \
                     --target wasm32-unknown-unknown --lib
