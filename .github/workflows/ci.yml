@@ -70,8 +70,13 @@ jobs:
                   CC_wasm32_unknown_unknown: clang
                   CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
               run: |
+                  set -euo pipefail
                   rustup target add wasm32-unknown-unknown
-                  cargo install wasm-bindgen-cli --version 0.2.126 --locked
+                  # The CLI must match the wasm-bindgen version that wasm-bindgen-test pins.
+                  WASM_BINDGEN_VERSION=$(cargo metadata --format-version 1 --filter-platform wasm32-unknown-unknown \
+                    | jq -er '[.packages[] | select(.name == "wasm-bindgen") | .version] | unique
+                      | if length == 1 then .[0] else error("expected one wasm-bindgen version, found \(.)") end')
+                  cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked
                   CHROMEDRIVER="$CHROMEWEBDRIVER/chromedriver" cargo test \
                     --no-default-features --features channel,attestation \
                     --target wasm32-unknown-unknown --lib

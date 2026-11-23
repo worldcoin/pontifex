@@ -122,8 +122,7 @@ pub fn client_with_credentials(
 /// Fills in any timeout the caller left unset
 fn bounded_timeouts(configured: Option<&TimeoutConfig>) -> TimeoutConfig {
 	configured
-		.map(TimeoutConfig::to_builder)
-		.unwrap_or_default()
+		.map_or_else(Default::default, TimeoutConfig::to_builder)
 		.take_unset_from(
 			TimeoutConfig::builder()
 				.connect_timeout(DEFAULT_CONNECT_TIMEOUT)

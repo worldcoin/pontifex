@@ -253,7 +253,7 @@ impl Verifier {
 	}
 
 	fn verify_cose_signature(cose_sign1: &CoseSign1, leaf_cert: &Certificate) -> Result<(), Error> {
-		let spki = &leaf_cert.tbs_certificate.subject_public_key_info;
+		let spki = leaf_cert.tbs_certificate().subject_public_key_info();
 		let public_key_bytes = spki.subject_public_key.as_bytes().ok_or_else(|| {
 			Error::SignatureInvalid("Failed to extract public key bytes".to_string())
 		})?;
