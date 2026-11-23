@@ -149,7 +149,7 @@ pub async fn serve(
 			}
 		})?;
 
-	Ok(serve_with(listener, config, on_event).await)
+	match serve_with(listener, config, on_event).await {}
 }
 
 const fn validate(config: &Config) -> Result<(), Error> {
